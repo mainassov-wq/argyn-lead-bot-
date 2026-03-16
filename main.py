@@ -2,13 +2,14 @@ import os
 import logging
 import requests
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8711518982:AAEshDeMsvh9-lTPYa9LgNtOC_kifTJPBbs")
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "576402316"))
@@ -17,11 +18,13 @@ AGENT_ID = os.environ.get("AGENT_ID", "agent_3201kks4x6b4echvgxrdght0xn2q")
 AGENT_PHONE_NUMBER_ID = os.environ.get("AGENT_PHONE_NUMBER_ID", "phnum_8301kkqsspqdedk92txj26vhgw4v")
 
 bot = Bot(token=BOT_TOKEN)
-
 pending_calls = {}
 
-@app.route("/lead", methods=["POST"])
+@app.route("/lead", methods=["POST", "OPTIONS"])
 def receive_lead():
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
     data = request.json or request.form.to_dict()
     logger.info(f"New lead received: {data}")
 
@@ -32,7 +35,6 @@ def receive_lead():
     contact_method = data.get("contact_method", "").lower()
     model = data.get("model", "")
 
-    # Clean phone number
     phone_clean = "".join(filter(str.isdigit, phone))
     if not phone_clean.startswith("1"):
         phone_clean = "1" + phone_clean
@@ -49,9 +51,8 @@ def receive_lead():
         "contact_method": contact_method
     }
 
-    # Format message
     contact_emoji = "📞" if contact_method == "call" else "💬" if "sms" in contact_method else "💚"
-    
+
     message = (
         f"🔔 *Новый лид!*\n\n"
         f"👤 *Имя:* {name}\n"
@@ -88,20 +89,20 @@ def telegram_webhook():
     import asyncio
     update_data = request.json
     update = Update.de_json(update_data, bot)
-    
+
     if update.callback_query:
         asyncio.run(handle_callback(update.callback_query))
-    
+
     return jsonify({"status": "ok"}), 200
 
 
 async def handle_callback(callback_query):
     data = callback_query.data
-    
+
     if data.startswith("call_"):
         lead_id = data.replace("call_", "")
         lead = pending_calls.get(lead_id)
-        
+
         if not lead:
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Лид не найден или уже обработан.")
             return
