@@ -3,7 +3,6 @@ import logging
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,13 +11,31 @@ app = Flask(__name__)
 CORS(app)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8711518982:AAEshDeMsvh9-lTPYa9LgNtOC_kifTJPBbs")
-ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "576402316"))
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "576402316")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "030e5675b8947cc061f16c79e718ee3c6375ce89f33c0b7ffb824d2f85b5f721")
 AGENT_ID = os.environ.get("AGENT_ID", "agent_3201kks4x6b4echvgxrdght0xn2q")
 AGENT_PHONE_NUMBER_ID = os.environ.get("AGENT_PHONE_NUMBER_ID", "phnum_8301kkqsspqdedk92txj26vhgw4v")
 
-bot = Bot(token=BOT_TOKEN)
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 pending_calls = {}
+
+
+def tg_send(text, reply_markup=None):
+    payload = {"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
+
+
+def tg_answer_callback(callback_id):
+    try:
+        requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=5)
+    except Exception as e:
+        logger.error(f"Answer callback error: {e}")
+
 
 @app.route("/lead", methods=["POST", "OPTIONS"])
 def receive_lead():
@@ -26,95 +43,69 @@ def receive_lead():
         return jsonify({"status": "ok"}), 200
 
     data = request.json or request.form.to_dict()
-    logger.info(f"New lead received: {data}")
+    logger.info(f"New lead: {data}")
 
     name = data.get("full_name") or data.get("name", "Unknown")
     phone = data.get("phone", "")
     car = data.get("car_brand") or data.get("vehicle_make", "")
+    model = data.get("model", "")
     location = data.get("vehicle_location") or data.get("location", "")
     contact_method = data.get("contact_method", "").lower()
-    model = data.get("model", "")
 
     phone_clean = "".join(filter(str.isdigit, phone))
-    if not phone_clean.startswith("1"):
+    if phone_clean and not phone_clean.startswith("1"):
         phone_clean = "1" + phone_clean
-    phone_e164 = "+" + phone_clean
+    phone_e164 = "+" + phone_clean if phone_clean else phone
 
-    lead_id = phone_clean
-
+    lead_id = phone_clean or name.replace(" ", "")
     pending_calls[lead_id] = {
-        "name": name,
-        "phone": phone_e164,
-        "car": car,
-        "model": model,
-        "location": location,
-        "contact_method": contact_method
+        "name": name, "phone": phone_e164, "car": car,
+        "model": model, "location": location, "contact_method": contact_method
     }
 
     contact_emoji = "📞" if contact_method == "call" else "💬" if "sms" in contact_method else "💚"
-
     message = (
         f"🔔 *Новый лид!*\n\n"
         f"👤 *Имя:* {name}\n"
         f"📱 *Телефон:* {phone_e164}\n"
         f"🚗 *Машина:* {car} {model}\n"
         f"📍 *Локация:* {location}\n"
-        f"{contact_emoji} *Метод связи:* {contact_method}\n"
+        f"{contact_emoji} *Метод связи:* {contact_method}"
     )
 
-    keyboard = []
+    keyboard = {"inline_keyboard": []}
     if contact_method == "call":
-        keyboard.append([InlineKeyboardButton("📞 Позвонить через Alex (ElevenLabs)", callback_data=f"call_{lead_id}")])
-    keyboard.append([InlineKeyboardButton("✅ Отметить как обработан", callback_data=f"done_{lead_id}")])
+        keyboard["inline_keyboard"].append([{"text": "📞 Позвонить через Alex", "callback_data": f"call_{lead_id}"}])
+    keyboard["inline_keyboard"].append([{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}])
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    import asyncio
-    asyncio.run(send_message(message, reply_markup))
-
+    tg_send(message, keyboard)
     return jsonify({"status": "ok"}), 200
-
-
-async def send_message(text, reply_markup=None):
-    await bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=text,
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
 
 
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
-    import asyncio
-    update_data = request.json
-    update = Update.de_json(update_data, bot)
+    data = request.json
+    callback = data.get("callback_query")
+    if not callback:
+        return jsonify({"status": "ok"}), 200
 
-    if update.callback_query:
-        asyncio.run(handle_callback(update.callback_query))
+    callback_id = callback.get("id")
+    cb_data = callback.get("data", "")
+    tg_answer_callback(callback_id)
 
-    return jsonify({"status": "ok"}), 200
-
-
-async def handle_callback(callback_query):
-    data = callback_query.data
-
-    if data.startswith("call_"):
-        lead_id = data.replace("call_", "")
+    if cb_data.startswith("call_"):
+        lead_id = cb_data.replace("call_", "")
         lead = pending_calls.get(lead_id)
 
         if not lead:
-            await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Лид не найден или уже обработан.")
-            return
+            tg_send("❌ Лид не найден или уже обработан.")
+            return jsonify({"status": "ok"}), 200
 
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⏳ Инициирую звонок для {lead['name']}...")
+        tg_send(f"⏳ Звоню {lead['name']} на {lead['phone']}...")
 
-        response = requests.post(
+        resp = requests.post(
             "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
-            headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
-                "Content-Type": "application/json"
-            },
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
             json={
                 "agent_id": AGENT_ID,
                 "agent_phone_number_id": AGENT_PHONE_NUMBER_ID,
@@ -126,28 +117,22 @@ async def handle_callback(callback_query):
                         "vehicle_location": lead["location"]
                     }
                 }
-            }
+            },
+            timeout=15
         )
 
-        if response.status_code == 200:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"✅ Звонок инициирован!\n👤 {lead['name']}\n📱 {lead['phone']}"
-            )
-            del pending_calls[lead_id]
+        if resp.status_code == 200:
+            tg_send(f"✅ Звонок инициирован!\n👤 {lead['name']}\n📱 {lead['phone']}")
+            pending_calls.pop(lead_id, None)
         else:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"❌ Ошибка звонка: {response.text}"
-            )
+            tg_send(f"❌ Ошибка ElevenLabs: {resp.status_code}\n{resp.text}")
 
-    elif data.startswith("done_"):
-        lead_id = data.replace("done_", "")
-        if lead_id in pending_calls:
-            del pending_calls[lead_id]
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text="✅ Лид отмечен как обработан.")
+    elif cb_data.startswith("done_"):
+        lead_id = cb_data.replace("done_", "")
+        pending_calls.pop(lead_id, None)
+        tg_send("✅ Лид отмечен как обработан.")
 
-    await bot.answer_callback_query(callback_query.id)
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/", methods=["GET"])
