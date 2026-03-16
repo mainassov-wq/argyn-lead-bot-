@@ -195,14 +195,19 @@ def sms_sent():
     """Zapier вызывает этот endpoint после отправки SMS"""
     data = request.json or {}
     phone = data.get("phone_number", "")
+    logger.info(f"SMS sent received: phone={phone}, known phones={list(phone_to_lead.keys())}")
 
-    lead_id = phone_to_lead.get(phone)
-    if not lead_id:
-        # попробуем без +
-        for p, lid in phone_to_lead.items():
-            if p.replace("+", "") == phone.replace("+", ""):
-                lead_id = lid
-                break
+    # Нормализуем номер — убираем всё кроме цифр для сравнения
+    phone_digits = "".join(filter(str.isdigit, phone))
+
+    lead_id = None
+    for p, lid in phone_to_lead.items():
+        p_digits = "".join(filter(str.isdigit, p))
+        if p_digits == phone_digits or p_digits.endswith(phone_digits) or phone_digits.endswith(p_digits):
+            lead_id = lid
+            break
+
+    logger.info(f"SMS sent: matched lead_id={lead_id}")
 
     if lead_id:
         lead = pending_calls.get(lead_id)
