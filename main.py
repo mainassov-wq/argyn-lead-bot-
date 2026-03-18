@@ -139,14 +139,23 @@ def post_call():
         data = request.get_json(force=True, silent=True) or {}
     
     inner_data = data.get("data", {})
-    logger.info(f"Post-call inner data keys: {list(inner_data.keys())}")
-    phone_call = inner_data.get("phone_call", {})
-    logger.info(f"Post-call phone_call: {phone_call}")
+    # phone_call находится внутри metadata
+    phone_call = inner_data.get("metadata", {}).get("phone_call", {})
     external_number = phone_call.get("external_number", "")
+    
+    # fallback 1: dynamic_variables
+    if not external_number:
+        dyn = inner_data.get("conversation_initiation_client_data", {}).get("dynamic_variables", {})
+        external_number = dyn.get("system__called_number", "")
+    
+    # fallback 2: user_id
+    if not external_number:
+        external_number = inner_data.get("user_id", "")
+    
     logger.info(f"Post-call: external_number={external_number}")
 
     if not external_number:
-        logger.warning(f"No external_number. inner_data keys: {list(inner_data.keys())}")
+        logger.warning("No external_number found anywhere")
         return jsonify({"status": "ok"}), 200
 
     logger.info(f"Post-call: sending SMS to {external_number}")
