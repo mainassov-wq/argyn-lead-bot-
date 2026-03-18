@@ -144,6 +144,67 @@ def send_sms(to_number, message):
         return None
 
 
+# ============ SMS CONVERSATION ============
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+sms_conversations = {}  # phone -> list of messages
+
+SMS_SYSTEM_PROMPT = """You are Alex, a friendly booking coordinator for Argyn Auto — a mobile pre-purchase car inspection service in Toronto & GTA.
+
+Your goal: have a natural SMS conversation with the customer, confirm their vehicle details, and get them to pay the $199 CAD inspection fee.
+
+Key info:
+- Service: mobile pre-purchase vehicle inspection, $199 CAD flat rate
+- We come to the vehicle location (dealer or private seller)
+- PDF report delivered within 24-48h
+- Phone: (647) 594-7510
+- Payment link: will be sent when customer is ready
+
+Rules:
+- Keep messages SHORT (2-3 sentences max) — this is SMS
+- Be casual and friendly, not robotic
+- Ask one question at a time
+- Confirm: vehicle make/model/year, location, timing
+- When customer agrees to book → end message with exactly: SEND_PAYMENT_LINK
+- If customer asks something you can't answer → say to call (647) 594-7510"""
+
+
+def get_ai_response(phone, customer_message, lead_info=None):
+    history = sms_conversations.get(phone, [])
+    
+    if not history and lead_info:
+        system = SMS_SYSTEM_PROMPT + f"\n\nCustomer info from form:\n- Name: {lead_info.get('name', '')}\n- Vehicle: {lead_info.get('car', '')} {lead_info.get('model', '')}\n- Location: {lead_info.get('location', '')}"
+    else:
+        system = SMS_SYSTEM_PROMPT
+    
+    history.append({"role": "user", "content": customer_message})
+    
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5",
+                "max_tokens": 300,
+                "system": system,
+                "messages": history
+            },
+            timeout=15
+        )
+        result = r.json()
+        ai_message = result["content"][0]["text"]
+        history.append({"role": "assistant", "content": ai_message})
+        sms_conversations[phone] = history[-20:]
+        return ai_message
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        return "Hey! Thanks for reaching out. I'll have someone from our team follow up shortly. Questions? Call (647) 594-7510"
+
+
+
 @app.route("/lead", methods=["POST", "OPTIONS"])
 def receive_lead():
     if request.method == "OPTIONS":
@@ -405,66 +466,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-
-# ============ SMS CONVERSATION ============
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-sms_conversations = {}  # phone -> list of messages
-
-SMS_SYSTEM_PROMPT = """You are Alex, a friendly booking coordinator for Argyn Auto — a mobile pre-purchase car inspection service in Toronto & GTA.
-
-Your goal: have a natural SMS conversation with the customer, confirm their vehicle details, and get them to pay the $199 CAD inspection fee.
-
-Key info:
-- Service: mobile pre-purchase vehicle inspection, $199 CAD flat rate
-- We come to the vehicle location (dealer or private seller)
-- PDF report delivered within 24-48h
-- Phone: (647) 594-7510
-- Payment link: will be sent when customer is ready
-
-Rules:
-- Keep messages SHORT (2-3 sentences max) — this is SMS
-- Be casual and friendly, not robotic
-- Ask one question at a time
-- Confirm: vehicle make/model/year, location, timing
-- When customer agrees to book → end message with exactly: SEND_PAYMENT_LINK
-- If customer asks something you can't answer → say to call (647) 594-7510"""
-
-
-def get_ai_response(phone, customer_message, lead_info=None):
-    history = sms_conversations.get(phone, [])
-    
-    if not history and lead_info:
-        # First message — include lead context
-        system = SMS_SYSTEM_PROMPT + f"\n\nCustomer info from form:\n- Name: {lead_info.get('name', '')}\n- Vehicle: {lead_info.get('car', '')} {lead_info.get('model', '')}\n- Location: {lead_info.get('location', '')}"
-    else:
-        system = SMS_SYSTEM_PROMPT
-    
-    history.append({"role": "user", "content": customer_message})
-    
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5",
-                "max_tokens": 300,
-                "system": system,
-                "messages": history
-            },
-            timeout=15
-        )
-        result = r.json()
-        ai_message = result["content"][0]["text"]
-        history.append({"role": "assistant", "content": ai_message})
-        sms_conversations[phone] = history[-20:]  # keep last 20 messages
-        return ai_message
-    except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        return "Hey! Thanks for reaching out. I'll have someone from our team follow up shortly. Questions? Call (647) 594-7510"
 
 
 @app.route("/sms-incoming", methods=["POST"])
