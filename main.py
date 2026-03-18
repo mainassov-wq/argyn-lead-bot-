@@ -21,6 +21,7 @@ TWILIO_FROM = os.environ.get("TWILIO_FROM", "+16474933481")
 STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/00w5kwcXQ644cn78q0fMA00")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
 pending_calls = {}
 phone_to_lead = {}
 
@@ -73,6 +74,34 @@ def tg_answer_callback(callback_id):
         logger.error(f"Answer callback error: {e}")
 
 
+def create_topic(name):
+    try:
+        r = requests.post(f"{TELEGRAM_API}/createForumTopic", json={
+            "chat_id": GROUP_ID,
+            "name": name[:128]
+        }, timeout=10)
+        result = r.json()
+        return result.get("result", {}).get("message_thread_id")
+    except Exception as e:
+        logger.error(f"Create topic error: {e}")
+        return None
+
+def tg_send_topic(thread_id, text, reply_markup=None):
+    payload = {
+        "chat_id": GROUP_ID,
+        "message_thread_id": thread_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
+        return r.json().get("result", {}).get("message_id")
+    except Exception as e:
+        logger.error(f"Telegram topic send error: {e}")
+        return None
+
 def send_sms(to_number, message):
     try:
         r = requests.post(
@@ -114,25 +143,38 @@ def receive_lead():
         "name": name, "phone": phone_e164, "car": car,
         "model": model, "location": location,
         "contact_method": contact_method, "stage": 0,
-        "message_id": None
+        "message_id": None, "thread_id": None
     }
     pending_calls[lead_id] = lead
     phone_to_lead[phone_e164] = lead_id
 
+    # Create topic in group
+    car_short = f"{car} {model}".strip()[:30]
+    topic_name = f"{name} | {car_short}"
+    thread_id = create_topic(topic_name)
+    lead["thread_id"] = thread_id
+
+    # Build keyboard
     keyboard = {"inline_keyboard": []}
     if contact_method == "call":
         keyboard["inline_keyboard"].append([{"text": "📞 Позвонить через Alex", "callback_data": f"call_{lead_id}"}])
     keyboard["inline_keyboard"].append([{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}])
 
+    # Send to personal admin chat
     msg_id = tg_send(build_status_message(lead), keyboard)
     lead["message_id"] = msg_id
 
-    # If SMS contact method — send first message to client
+    # Send to group topic
+    if thread_id:
+        tg_send_topic(thread_id, build_status_message(lead), keyboard)
+
+    # If SMS — start conversation
     if contact_method == "sms" and phone_e164:
         first_msg = get_ai_response(phone_e164, "START_CONVERSATION", lead)
         first_msg = first_msg.replace("SEND_PAYMENT_LINK", "").strip()
         send_sms(phone_e164, first_msg)
-        tg_send(f"💬 SMS переписка начата с {phone_e164}")
+        if thread_id:
+            tg_send_topic(thread_id, f"🤖 *Alex:* {first_msg}")
 
     return jsonify({"status": "ok"}), 200
 
@@ -396,18 +438,24 @@ def sms_incoming():
     send_link = "SEND_PAYMENT_LINK" in ai_response
     ai_response = ai_response.replace("SEND_PAYMENT_LINK", "").strip()
 
+    # Forward to topic
+    thread_id = lead_info.get("thread_id") if lead_info else None
+    if thread_id:
+        tg_send_topic(thread_id, f"👤 *Клиент:* {body}")
+        tg_send_topic(thread_id, f"🤖 *Alex:* {ai_response}")
+
     # Send SMS response
     send_sms(from_number, ai_response)
 
     # Send payment link if triggered
     if send_link:
         send_sms(from_number, f"Here's your secure booking link 👇\n{STRIPE_LINK}")
-        # Update lead stage
+        if thread_id:
+            tg_send_topic(thread_id, f"💳 Ссылка на оплату отправлена клиенту!")
         if lead_id and lead_info:
             lead_info["stage"] = 2
             if lead_info.get("message_id"):
                 keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
                 tg_edit(lead_info["message_id"], build_status_message(lead_info), keyboard)
-        tg_send(f"💬 SMS клиент {from_number} согласился — ссылка отправлена!")
 
     return "", 204
