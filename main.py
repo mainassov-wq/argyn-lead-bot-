@@ -132,7 +132,7 @@ def receive_lead():
 @app.route("/postcall", methods=["POST"])
 def post_call():
     data = request.json or {}
-    logger.info(f"Post-call webhook received")
+    logger.info(f"Post-call webhook received: {data}")
 
     phone_call = data.get("data", {}).get("phone_call", {})
     external_number = phone_call.get("external_number", "")
