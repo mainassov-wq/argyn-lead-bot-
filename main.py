@@ -138,12 +138,15 @@ def post_call():
     except Exception:
         data = request.get_json(force=True, silent=True) or {}
     
-    phone_call = data.get("data", {}).get("phone_call", {})
+    inner_data = data.get("data", {})
+    logger.info(f"Post-call inner data keys: {list(inner_data.keys())}")
+    phone_call = inner_data.get("phone_call", {})
+    logger.info(f"Post-call phone_call: {phone_call}")
     external_number = phone_call.get("external_number", "")
     logger.info(f"Post-call: external_number={external_number}")
 
     if not external_number:
-        logger.warning(f"No external_number. Keys: {list(data.keys())}")
+        logger.warning(f"No external_number. inner_data keys: {list(inner_data.keys())}")
         return jsonify({"status": "ok"}), 200
 
     logger.info(f"Post-call: sending SMS to {external_number}")
