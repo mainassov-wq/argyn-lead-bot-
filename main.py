@@ -131,14 +131,19 @@ def receive_lead():
 
 @app.route("/postcall", methods=["POST"])
 def post_call():
-    data = request.json or {}
-    logger.info(f"Post-call webhook received: {data}")
-
+    import json
+    raw = request.get_data(as_text=True)
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = request.get_json(force=True, silent=True) or {}
+    
     phone_call = data.get("data", {}).get("phone_call", {})
     external_number = phone_call.get("external_number", "")
+    logger.info(f"Post-call: external_number={external_number}")
 
     if not external_number:
-        logger.warning("No external_number in post-call webhook")
+        logger.warning(f"No external_number. Keys: {list(data.keys())}")
         return jsonify({"status": "ok"}), 200
 
     logger.info(f"Post-call: sending SMS to {external_number}")
