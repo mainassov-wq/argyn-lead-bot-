@@ -32,17 +32,43 @@ def build_status_message(lead):
     location = lead.get("location", "")
     phone = lead["phone"]
     stage = lead.get("stage", 0)
-    s1 = "✅" if stage >= 1 else "⏳" if stage == 0 else "⬜"
-    s2 = "✅" if stage >= 2 else "⏳" if stage == 1 else "⬜"
-    s3 = "✅" if stage >= 3 else "⏳" if stage == 2 else "⬜"
+    contact = lead.get("contact_method", "")
     circle = "🟢" if stage == 3 else "🟡" if stage >= 1 else "🔵"
-    return (
-        f"{circle} *{name}* | {car}\n"
-        f"📱 {phone} | 📍 {location}\n\n"
-        f"1️⃣ Звонок — {s1}\n"
-        f"2️⃣ SMS — {s2}\n"
-        f"3️⃣ Оплата — {s3}"
-    )
+
+    if contact == "call":
+        s1 = "✅" if stage >= 1 else "⏳" if stage == 0 else "⬜"
+        s2 = "✅" if stage >= 2 else "⏳" if stage == 1 else "⬜"
+        s3 = "✅" if stage >= 3 else "⏳" if stage == 2 else "⬜"
+        return (
+            f"{circle} *{name}* | {car}\n"
+            f"📱 {phone} | 📍 {location}\n"
+            f"📞 Метод: Звонок\n\n"
+            f"1️⃣ Звонок — {s1}\n"
+            f"2️⃣ SMS ссылка — {s2}\n"
+            f"3️⃣ Оплата — {s3}"
+        )
+    else:
+        s1 = "✅" if stage >= 1 else "⏳" if stage == 0 else "⬜"
+        s2 = "✅" if stage >= 2 else "⏳" if stage == 1 else "⬜"
+        s3 = "✅" if stage >= 3 else "⏳" if stage == 2 else "⬜"
+        # Extra details collected during SMS
+        year = lead.get("year", "—")
+        address = lead.get("address", "—")
+        timing = lead.get("timing", "—")
+        present = lead.get("present", "—")
+        return (
+            f"{circle} *{name}* | {car}\n"
+            f"📱 {phone} | 📍 {location}\n"
+            f"💬 Метод: SMS\n\n"
+            f"1️⃣ Переписка — {s1}\n"
+            f"2️⃣ Ссылка отправлена — {s2}\n"
+            f"3️⃣ Оплачено — {s3}\n\n"
+            f"📋 *Детали:*\n"
+            f"🚗 Год: {year}\n"
+            f"📍 Адрес: {address}\n"
+            f"📅 Когда: {timing}\n"
+            f"👤 Присутствует: {present}"
+        )
 
 
 def tg_send(text, reply_markup=None):
@@ -160,13 +186,10 @@ def receive_lead():
         keyboard["inline_keyboard"].append([{"text": "📞 Позвонить через Alex", "callback_data": f"call_{lead_id}"}])
     keyboard["inline_keyboard"].append([{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}])
 
-    # Send to personal admin chat
-    msg_id = tg_send(build_status_message(lead), keyboard)
-    lead["message_id"] = msg_id
-
-    # Send to group topic
+    # Send to group topic only
     if thread_id:
-        tg_send_topic(thread_id, build_status_message(lead), keyboard)
+        msg_id = tg_send_topic(thread_id, build_status_message(lead), keyboard)
+        lead["message_id"] = msg_id
 
     # If SMS — start conversation
     if contact_method == "sms" and phone_e164:
@@ -233,10 +256,18 @@ def post_call():
             if lead["message_id"]:
                 tg_edit(lead["message_id"], build_status_message(lead), keyboard)
 
-    if sid:
-        tg_send(f"📤 SMS отправлено клиенту {external_number}")
+    # Notify in lead topic if exists
+    if lead_id and lead_info and lead_info.get("thread_id"):
+        tid = lead_info["thread_id"]
+        if sid:
+            tg_send_topic(tid, f"📤 SMS со ссылкой отправлено клиенту!")
+        else:
+            tg_send_topic(tid, f"❌ Ошибка отправки SMS!")
     else:
-        tg_send(f"❌ Ошибка отправки SMS на {external_number}")
+        if sid:
+            tg_send(f"📤 SMS отправлено клиенту {external_number}")
+        else:
+            tg_send(f"❌ Ошибка отправки SMS на {external_number}")
 
     return jsonify({"status": "ok"}), 200
 
@@ -260,7 +291,11 @@ def telegram_webhook():
             tg_send("❌ Лид не найден или уже обработан.")
             return jsonify({"status": "ok"}), 200
 
-        tg_send(f"⏳ Звоню {lead['name']} на {lead['phone']}...")
+        thread_id = lead.get("thread_id")
+        if thread_id:
+            tg_send_topic(thread_id, f"⏳ Звоню {lead['name']} на {lead['phone']}...")
+        else:
+            tg_send(f"⏳ Звоню {lead['name']} на {lead['phone']}...")
 
         resp = requests.post(
             "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
@@ -286,17 +321,29 @@ def telegram_webhook():
             if lead["message_id"]:
                 tg_edit(lead["message_id"], build_status_message(lead), keyboard)
             else:
-                tg_send(f"✅ Звонок инициирован!\n👤 {lead['name']}\n📱 {lead['phone']}")
+                if thread_id:
+                    tg_send_topic(thread_id, f"✅ Звонок инициирован!")
+                else:
+                    tg_send(f"✅ Звонок инициирован!\n👤 {lead['name']}\n📱 {lead['phone']}")
         else:
-            tg_send(f"❌ Ошибка ElevenLabs: {resp.status_code}\n{resp.text}")
+            if thread_id:
+                tg_send_topic(thread_id, f"❌ Ошибка ElevenLabs: {resp.status_code}")
+            else:
+                tg_send(f"❌ Ошибка ElevenLabs: {resp.status_code}\n{resp.text}")
 
     elif cb_data.startswith("done_"):
         lead_id = cb_data.replace("done_", "")
         lead = pending_calls.get(lead_id)
         if lead:
+            tid = lead.get("thread_id")
             phone_to_lead.pop(lead["phone"], None)
             pending_calls.pop(lead_id, None)
-        tg_send("✅ Лид отмечен как обработан.")
+            if tid:
+                tg_send_topic(tid, "✅ Лид обработан.")
+            else:
+                tg_send("✅ Лид отмечен как обработан.")
+        else:
+            tg_send("✅ Лид отмечен как обработан.")
 
     return jsonify({"status": "ok"}), 200
 
