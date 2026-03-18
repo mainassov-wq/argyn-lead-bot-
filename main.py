@@ -107,7 +107,9 @@ def create_topic(name):
             "name": name[:128]
         }, timeout=10)
         result = r.json()
-        return result.get("result", {}).get("message_thread_id")
+        logger.info(f"Create topic response: {result}")
+        thread_id = result.get("result", {}).get("message_thread_id")
+        return thread_id
     except Exception as e:
         logger.error(f"Create topic error: {e}")
         return None
