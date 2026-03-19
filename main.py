@@ -452,6 +452,7 @@ def telegram_webhook():
 def stripe_webhook():
     payload = request.get_json(force=True) or {}
     event_type = payload.get("type", "")
+    logger.info(f"Stripe webhook: {event_type}")
     if event_type not in ("payment_intent.succeeded", "checkout.session.completed"):
         return jsonify({"status": "ignored"}), 200
 
@@ -459,18 +460,41 @@ def stripe_webhook():
     metadata = obj.get("metadata", {})
     phone = metadata.get("phone") or metadata.get("phone_number") or ""
     customer_name = metadata.get("customer_name") or metadata.get("name") or ""
+    amount = obj.get("amount_total") or obj.get("amount", 0)
+    amount_str = f"${amount / 100:.0f}" if amount else "$199"
+    logger.info(f"Stripe payment: phone={phone} name={customer_name}")
 
+    # Try to find lead by phone — try multiple formats
     lead_id = phone_to_lead.get(phone)
-    if lead_id:
-        lead = pending_calls.get(lead_id)
-        if lead:
-            lead["stage"] = 3
-            if lead["message_id"]:
-                tg_edit(lead["message_id"], build_status_message(lead))
-    else:
-        amount = obj.get("amount_total") or obj.get("amount", 0)
-        amount_str = f"${amount / 100:.0f}" if amount else "$199"
+    if not lead_id:
+        phone_digits = "".join(filter(str.isdigit, phone))
+        for p, lid in phone_to_lead.items():
+            p_digits = "".join(filter(str.isdigit, p))
+            if p_digits == phone_digits or p_digits.endswith(phone_digits) or phone_digits.endswith(p_digits):
+                lead_id = lid
+                break
+
+    # If still not found — notify in personal chat and all active topics
+    if not lead_id:
+        logger.warning(f"Stripe: no lead found for phone={phone}, known={list(phone_to_lead.keys())}")
+        # Notify in all active topics
+        for lid, lead in pending_calls.items():
+            if lead.get("thread_id") and lead.get("stage") == 2:
+                tg_send_topic(lead["thread_id"], f"💳 *Оплата получена!*\n👤 {customer_name or 'Unknown'}\n💰 {amount_str} CAD")
         tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
+        return jsonify({"status": "ok"}), 200
+
+    lead = pending_calls.get(lead_id)
+    if lead:
+        lead["stage"] = 3
+        thread_id = lead.get("thread_id")
+        updated = build_status_message(lead)
+        if thread_id:
+            tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD\n\n{updated}")
+        else:
+            tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
+        if lead.get("message_id") and thread_id:
+            tg_edit(lead["message_id"], updated)
 
     return jsonify({"status": "ok"}), 200
 
