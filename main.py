@@ -160,6 +160,7 @@ def send_sms(to_number, message):
 # ============ SMS CONVERSATION ============
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 sms_conversations = {}  # phone -> list of messages
+paused_conversations = set()  # phones where bot is paused
 
 SMS_SYSTEM_PROMPT = """You are Alex, a booking coordinator for ARGYN AUTO in Toronto. You are NOT an AI — you're a real person texting from the office.
 
@@ -386,6 +387,45 @@ def post_call():
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
     data = request.json
+
+    # Handle regular messages from admin in group topics
+    message = data.get("message", {})
+    if message and message.get("chat", {}).get("id") == int(GROUP_ID):
+        thread_id = message.get("message_thread_id")
+        text = message.get("text", "").strip()
+        from_user = message.get("from", {})
+
+        # Find lead by thread_id
+        lead_for_thread = None
+        lead_id_for_thread = None
+        for lid, l in pending_calls.items():
+            if l.get("thread_id") == thread_id:
+                lead_for_thread = l
+                lead_id_for_thread = lid
+                break
+
+        if lead_for_thread and text:
+            phone = lead_for_thread.get("phone")
+
+            # Handle commands
+            if text.lower() == "/pause":
+                paused_conversations.add(phone)
+                tg_send_topic(thread_id, "⏸ Бот на паузе. Ты переписываешься вручную. /resume чтобы включить обратно.")
+                return jsonify({"status": "ok"}), 200
+
+            elif text.lower() == "/resume":
+                paused_conversations.discard(phone)
+                tg_send_topic(thread_id, "▶️ Бот снова активен и будет отвечать автоматически.")
+                return jsonify({"status": "ok"}), 200
+
+            # Forward admin message to client via SMS (only if it's not from the bot itself)
+            elif not text.startswith("🤖") and not text.startswith("👤") and not text.startswith("💳") and not text.startswith("⏸") and not text.startswith("▶️") and not text.startswith("📤") and not text.startswith("🔵") and not text.startswith("🟡") and not text.startswith("🟢"):
+                # Only forward if message is from a human admin (not bot)
+                if not from_user.get("is_bot", False):
+                    send_sms(phone, text)
+                    tg_send_topic(thread_id, f"📤 Отправлено клиенту: {text}")
+                    return jsonify({"status": "ok"}), 200
+
     callback = data.get("callback_query")
     if not callback:
         return jsonify({"status": "ok"}), 200
@@ -554,6 +594,15 @@ def sms_incoming():
     lead_id = phone_to_lead.get(from_number)
     lead_info = pending_calls.get(lead_id) if lead_id else None
 
+    # Forward to topic first
+    thread_id_early = lead_info.get("thread_id") if lead_info else None
+    if thread_id_early:
+        tg_send_topic(thread_id_early, f"👤 *Клиент:* {body}")
+
+    # If bot is paused — don't respond
+    if from_number in paused_conversations:
+        return "", 204
+
     # Get AI response
     ai_response = get_ai_response(from_number, body, lead_info)
 
@@ -602,7 +651,6 @@ def sms_incoming():
     # Forward to topic
     thread_id = lead_info.get("thread_id") if lead_info else None
     if thread_id:
-        tg_send_topic(thread_id, f"👤 *Клиент:* {body}")
         tg_send_topic(thread_id, f"🤖 *Alex:* {ai_response}")
 
     # Delay 6-10 seconds to feel more human
