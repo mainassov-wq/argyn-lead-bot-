@@ -18,7 +18,7 @@ AGENT_PHONE_NUMBER_ID = os.environ.get("AGENT_PHONE_NUMBER_ID", "phnum_8301kkqss
 TWILIO_SID = os.environ.get("TWILIO_SID", "")
 TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN", "")
 TWILIO_FROM = os.environ.get("TWILIO_FROM", "+16474933481")
-STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/00w5kwcXQ644cn78q0fMA00")
+STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/test_00w5kwcXQ644cn78q0fMA00")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
@@ -530,7 +530,7 @@ def sms_incoming():
 
     # Delay 6-10 seconds to feel more human
     import time, random
-    time.sleep(random.randint(6, 10))
+    time.sleep(random.randint(2, 4))
 
     # Send SMS response
     send_sms(from_number, ai_response)
@@ -538,13 +538,15 @@ def sms_incoming():
     # Send payment link if triggered
     if send_link:
         send_sms(from_number, f"Here's your secure booking link 👇\n{STRIPE_LINK}")
-        if thread_id:
-            tg_send_topic(thread_id, f"💳 Ссылка на оплату отправлена клиенту!")
         if lead_id and lead_info:
             lead_info["stage"] = 2
-            if lead_info.get("message_id"):
-                keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-                tg_edit(lead_info["message_id"], build_status_message(lead_info), keyboard)
+            keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
+            updated_card = build_status_message(lead_info)
+            if thread_id:
+                tg_send_topic(thread_id, f"💳 Ссылка отправлена! Обновлённая карточка:\n\n{updated_card}", keyboard)
+            # Update the original card in topic
+            if lead_info.get("message_id") and thread_id:
+                tg_edit(lead_info["message_id"], updated_card, keyboard)
 
     return "", 204
 
