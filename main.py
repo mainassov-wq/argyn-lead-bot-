@@ -580,11 +580,18 @@ def sms_incoming():
             )
             raw = extract_resp.json()["content"][0]["text"].strip()
             logger.info(f"Extraction result: {raw}")
-            extracted = json_mod.loads(raw)
+            # Strip markdown code blocks if present
+            clean = raw.replace("```json", "").replace("```", "").strip()
+            extracted = json_mod.loads(clean)
             if extracted.get("year"): lead_info["year"] = str(extracted["year"])
             if extracted.get("address"): lead_info["address"] = extracted["address"]
             if extracted.get("timing"): lead_info["timing"] = extracted["timing"]
             if extracted.get("present"): lead_info["present"] = extracted["present"]
+            # Update card in topic after extraction
+            thread_id = lead_info.get("thread_id")
+            if thread_id and lead_info.get("message_id"):
+                keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
+                tg_edit(lead_info["message_id"], build_status_message(lead_info), keyboard)
         except Exception as e:
             logger.error(f"Extraction error: {e}")
 
