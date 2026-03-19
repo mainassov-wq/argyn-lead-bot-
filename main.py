@@ -39,13 +39,24 @@ def build_status_message(lead):
         s1 = "✅" if stage >= 1 else "⏳" if stage == 0 else "⬜"
         s2 = "✅" if stage >= 2 else "⏳" if stage == 1 else "⬜"
         s3 = "✅" if stage >= 3 else "⏳" if stage == 2 else "⬜"
+        year = lead.get("year", "—")
+        address = lead.get("address", "—")
+        timing = lead.get("timing", "—")
+        present = lead.get("present", "—")
+        dealer = lead.get("dealer", "—")
         return (
             f"{circle} *{name}* | {car}\n"
             f"📱 {phone} | 📍 {location}\n"
             f"📞 Метод: Звонок\n\n"
             f"1️⃣ Звонок — {s1}\n"
             f"2️⃣ SMS ссылка — {s2}\n"
-            f"3️⃣ Оплата — {s3}"
+            f"3️⃣ Оплата — {s3}\n\n"
+            f"📋 *Детали:*\n"
+            f"🚗 Год: {year}\n"
+            f"📍 Адрес: {address}\n"
+            f"🏪 Dealer/Private: {dealer}\n"
+            f"📅 Когда: {timing}\n"
+            f"👤 Присутствует: {present}"
         )
     else:
         s1 = "✅" if stage >= 1 else "⏳" if stage == 0 else "⬜"
@@ -340,29 +351,25 @@ def post_call():
     )
     sid = send_sms(external_number, sms_message)
 
-    lead_id = None
-    for p, lid in phone_to_lead.items():
-        p_digits = "".join(filter(str.isdigit, p))
-        e_digits = "".join(filter(str.isdigit, external_number))
-        if p_digits == e_digits or p_digits.endswith(e_digits) or e_digits.endswith(p_digits):
-            lead_id = lid
-            break
+    # Use lead found earlier
+    lead_id = lead_id_pc
+    lead = pending_calls.get(lead_id) if lead_id else None
 
-    if lead_id:
-        lead = pending_calls.get(lead_id)
-        if lead:
-            lead["stage"] = 2
-            keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-            if lead["message_id"]:
-                tg_edit(lead["message_id"], build_status_message(lead), keyboard)
-
-    # Notify in lead topic if exists
-    if lead_id and lead_info and lead_info.get("thread_id"):
-        tid = lead_info["thread_id"]
-        if sid:
-            tg_send_topic(tid, f"📤 SMS со ссылкой отправлено клиенту!")
+    if lead:
+        lead["stage"] = 2
+        thread_id = lead.get("thread_id")
+        keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
+        updated_card = build_status_message(lead)
+        if thread_id:
+            if lead.get("message_id"):
+                tg_edit(lead["message_id"], updated_card, keyboard)
+            if sid:
+                tg_send_topic(thread_id, f"📤 SMS со ссылкой отправлено клиенту!")
+            else:
+                tg_send_topic(thread_id, f"❌ Ошибка отправки SMS!")
         else:
-            tg_send_topic(tid, f"❌ Ошибка отправки SMS!")
+            if sid:
+                tg_send(f"📤 SMS отправлено клиенту {external_number}")
     else:
         if sid:
             tg_send(f"📤 SMS отправлено клиенту {external_number}")
@@ -474,13 +481,17 @@ def stripe_webhook():
                 lead_id = lid
                 break
 
-    # If still not found — notify in personal chat and all active topics
+    # If still not found — find most recent lead with stage=2
     if not lead_id:
-        logger.warning(f"Stripe: no lead found for phone={phone}, known={list(phone_to_lead.keys())}")
-        # Notify in all active topics
-        for lid, lead in pending_calls.items():
-            if lead.get("thread_id") and lead.get("stage") == 2:
-                tg_send_topic(lead["thread_id"], f"💳 *Оплата получена!*\n👤 {customer_name or 'Unknown'}\n💰 {amount_str} CAD")
+        logger.warning(f"Stripe: no lead found for phone={phone}")
+        # Find the most recent lead waiting for payment
+        for lid, l in pending_calls.items():
+            if l.get("stage") == 2:
+                lead_id = lid
+                logger.info(f"Stripe: matched by stage=2, lead_id={lead_id}")
+                break
+    
+    if not lead_id:
         tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
         return jsonify({"status": "ok"}), 200
 
