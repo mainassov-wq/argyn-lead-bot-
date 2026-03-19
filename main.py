@@ -557,6 +557,37 @@ def sms_incoming():
     # Get AI response
     ai_response = get_ai_response(from_number, body, lead_info)
 
+    # Extract details from conversation
+    if lead_info and ANTHROPIC_API_KEY:
+        try:
+            import json as json_mod
+            history = sms_conversations.get(from_number, [])
+            conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in history[-12:]])
+            extract_resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5",
+                    "max_tokens": 150,
+                    "system": "Extract from this SMS conversation. Return ONLY valid JSON: {year, address, timing, present}. Use null if not mentioned.",
+                    "messages": [{"role": "user", "content": conv_text}]
+                },
+                timeout=8
+            )
+            raw = extract_resp.json()["content"][0]["text"].strip()
+            logger.info(f"Extraction result: {raw}")
+            extracted = json_mod.loads(raw)
+            if extracted.get("year"): lead_info["year"] = str(extracted["year"])
+            if extracted.get("address"): lead_info["address"] = extracted["address"]
+            if extracted.get("timing"): lead_info["timing"] = extracted["timing"]
+            if extracted.get("present"): lead_info["present"] = extracted["present"]
+        except Exception as e:
+            logger.error(f"Extraction error: {e}")
+
     # Check if we should send payment link
     send_link = "SEND_PAYMENT_LINK" in ai_response
     ai_response = ai_response.replace("SEND_PAYMENT_LINK", "").strip()
