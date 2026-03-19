@@ -495,9 +495,6 @@ def health():
     return jsonify({"status": "Argyn Auto Lead Bot is running"}), 200
 
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
 
 
 
@@ -540,3 +537,7 @@ def sms_incoming():
                 tg_edit(lead_info["message_id"], build_status_message(lead_info), keyboard)
 
     return "", 204
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
