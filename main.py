@@ -349,16 +349,25 @@ def post_call():
 
     logger.info(f"Post-call: sending SMS to {external_number}")
 
+    # Find lead by phone FIRST so we can build personalized pay link
+    phone_digits = "".join(filter(str.isdigit, external_number))
+    lead_id = None
+    for p, lid in phone_to_lead.items():
+        p_digits = "".join(filter(str.isdigit, p))
+        if p_digits == phone_digits or p_digits.endswith(phone_digits) or phone_digits.endswith(p_digits):
+            lead_id = lid
+            break
+    logger.info(f"Post-call: matched lead_id={lead_id} for {external_number}")
+    lead = pending_calls.get(lead_id) if lead_id else None
+
+    # Build personalized pay link with client_reference_id
+    pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}" if lead_id else STRIPE_LINK
     sms_message = (
         f"Hi! Thanks for chatting with Alex from Argyn Auto 🚗\n\n"
-        f"Here's your inspection booking link:\n{STRIPE_LINK}\n\n"
+        f"Here's your inspection booking link:\n{pay_url}\n\n"
         f"Questions? Reply or call (647) 594-7510"
     )
     sid = send_sms(external_number, sms_message)
-
-    # Use lead found earlier
-    lead_id = lead_id_pc
-    lead = pending_calls.get(lead_id) if lead_id else None
 
     if lead:
         lead["stage"] = 2
@@ -499,6 +508,8 @@ def telegram_webhook():
     return jsonify({"status": "ok"}), 200
 
 
+
+
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.get_json(force=True) or {}
@@ -511,12 +522,17 @@ def stripe_webhook():
     metadata = obj.get("metadata", {})
     phone = metadata.get("phone") or metadata.get("phone_number") or ""
     customer_name = metadata.get("customer_name") or metadata.get("name") or ""
+    client_ref = obj.get("client_reference_id") or ""
     amount = obj.get("amount_total") or obj.get("amount", 0)
     amount_str = f"${amount / 100:.0f}" if amount else "$199"
     logger.info(f"Stripe payment: phone={phone} name={customer_name}")
 
     # Try to find lead by phone — try multiple formats
-    lead_id = phone_to_lead.get(phone)
+    # First try client_reference_id (most reliable — comes from our pay link)
+    if client_ref and client_ref in pending_calls:
+        lead_id = client_ref
+    else:
+        lead_id = phone_to_lead.get(phone)
     if not lead_id:
         phone_digits = "".join(filter(str.isdigit, phone))
         for p, lid in phone_to_lead.items():
@@ -525,18 +541,9 @@ def stripe_webhook():
                 lead_id = lid
                 break
 
-    # If still not found — find most recent lead with stage=2
     if not lead_id:
         logger.warning(f"Stripe: no lead found for phone={phone}")
-        # Find the most recent lead waiting for payment
-        for lid, l in pending_calls.items():
-            if l.get("stage") == 2:
-                lead_id = lid
-                logger.info(f"Stripe: matched by stage=2, lead_id={lead_id}")
-                break
-    
-    if not lead_id:
-        tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
+        tg_send(f"💳 *Оплата получена!* {amount_str} CAD\n👤 {customer_name or 'Неизвестный'}\n📱 {phone or 'нет телефона'}\n⚠️ Лид не найден — привяжи вручную")
         return jsonify({"status": "ok"}), 200
 
     lead = pending_calls.get(lead_id)
@@ -544,12 +551,13 @@ def stripe_webhook():
         lead["stage"] = 3
         thread_id = lead.get("thread_id")
         updated = build_status_message(lead)
+        keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
         if thread_id:
-            tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD\n\n{updated}")
+            tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD")
+            if lead.get("message_id"):
+                tg_edit(lead["message_id"], updated, keyboard)
         else:
             tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
-        if lead.get("message_id") and thread_id:
-            tg_edit(lead["message_id"], updated)
 
     return jsonify({"status": "ok"}), 200
 
@@ -662,7 +670,8 @@ def sms_incoming():
 
     # Send payment link if triggered
     if send_link:
-        send_sms(from_number, f"Here's your secure booking link 👇\n{STRIPE_LINK}")
+        pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}" if lead_id else STRIPE_LINK
+        send_sms(from_number, f"Here's your secure booking link 👇\n{pay_url}")
         if lead_id and lead_info:
             lead_info["stage"] = 2
             keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
