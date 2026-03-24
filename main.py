@@ -19,6 +19,8 @@ TWILIO_SID = os.environ.get("TWILIO_SID", "")
 TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN", "")
 TWILIO_FROM = os.environ.get("TWILIO_FROM", "+16474933481")
 STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/test_00w5kwcXQ644cn78q0fMA00")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
@@ -102,6 +104,20 @@ def tg_edit(message_id, text, reply_markup=None):
         requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
     except Exception as e:
         logger.error(f"Telegram edit error: {e}")
+
+
+def tg_edit_topic(message_id, text, reply_markup=None):
+    """Edit a message inside a group topic (uses GROUP_ID)"""
+    payload = {"chat_id": GROUP_ID, "message_id": message_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        r = requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
+        result = r.json()
+        if not result.get("ok"):
+            logger.error(f"tg_edit_topic failed: {result}")
+    except Exception as e:
+        logger.error(f"Telegram edit topic error: {e}")
 
 
 def tg_answer_callback(callback_id):
@@ -376,7 +392,7 @@ def post_call():
         updated_card = build_status_message(lead)
         if thread_id:
             if lead.get("message_id"):
-                tg_edit(lead["message_id"], updated_card, keyboard)
+                tg_edit_topic(lead["message_id"], updated_card, keyboard)
             if sid:
                 tg_send_topic(thread_id, f"📤 SMS со ссылкой отправлено клиенту!")
             else:
@@ -479,7 +495,7 @@ def telegram_webhook():
             lead["stage"] = 1
             keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
             if lead["message_id"]:
-                tg_edit(lead["message_id"], build_status_message(lead), keyboard)
+                tg_edit_topic(lead["message_id"], build_status_message(lead), keyboard)
             else:
                 if thread_id:
                     tg_send_topic(thread_id, f"✅ Звонок инициирован!")
@@ -553,11 +569,83 @@ def stripe_webhook():
         updated = build_status_message(lead)
         keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
         if thread_id:
-            tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD")
             if lead.get("message_id"):
-                tg_edit(lead["message_id"], updated, keyboard)
+                tg_edit_topic(lead["message_id"], updated, keyboard)
+            tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD")
         else:
             tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
+
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/stripe-nego", methods=["POST"])
+def stripe_nego_webhook():
+    """Handle Stripe payment for Negotiation Strategy — unlocks nego in Supabase."""
+    payload = request.get_json(force=True) or {}
+    event_type = payload.get("type", "")
+    logger.info(f"Stripe nego webhook: {event_type}")
+
+    if event_type != "checkout.session.completed":
+        return jsonify({"status": "ignored"}), 200
+
+    obj = payload.get("data", {}).get("object", {})
+    report_id = obj.get("client_reference_id", "")
+    amount = obj.get("amount_total", 0)
+    amount_str = f"${amount / 100:.0f}" if amount else "$89"
+    customer_email = (obj.get("customer_details") or {}).get("email", "")
+
+    logger.info(f"Nego payment: report_id={report_id} amount={amount_str}")
+
+    if not report_id:
+        logger.warning("Nego webhook: no client_reference_id")
+        tg_send(f"💰 *Nego оплата!* {amount_str} CAD\n⚠️ report_id не найден — привяжи вручную")
+        return jsonify({"status": "ok"}), 200
+
+    # Unlock in Supabase
+    unlocked = False
+    ymm = ""
+    client_name = ""
+    thread_id = None
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            # Get report info first
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/reports?id=eq.{report_id}&select=ymm,client_name,thread_id",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                timeout=10
+            )
+            rows = r.json()
+            if rows:
+                ymm = rows[0].get("ymm", "")
+                client_name = rows[0].get("client_name", "")
+                thread_id = rows[0].get("thread_id")
+
+            # Unlock nego
+            r2 = requests.patch(
+                f"{SUPABASE_URL}/rest/v1/reports?id=eq.{report_id}",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"nego_paid": True},
+                timeout=10
+            )
+            unlocked = r2.status_code in (200, 204)
+            logger.info(f"Nego unlock status: {r2.status_code}")
+        except Exception as e:
+            logger.error(f"Supabase nego unlock error: {e}")
+
+    # Send notification to topic or admin
+    msg = (f"💰 *Nego Strategy продана!*\n"
+           f"🚗 {ymm or '—'}\n"
+           f"👤 {client_name or '—'}\n"
+           f"📋 `{report_id}`\n"
+           f"💵 *{amount_str} CAD*\n"
+           f"📧 {customer_email or '—'}\n"
+           f"{'✅ Стратегия разблокирована' if unlocked else '❌ Ошибка разблокировки'}")
+
+    if thread_id and GROUP_ID:
+        tg_send_topic(int(thread_id), msg)
+    else:
+        tg_send(msg)
 
     return jsonify({"status": "ok"}), 200
 
@@ -579,7 +667,7 @@ def sms_sent():
             lead["stage"] = 2
             if lead["message_id"]:
                 keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-                tg_edit(lead["message_id"], build_status_message(lead), keyboard)
+                tg_edit_topic(lead["message_id"], build_status_message(lead), keyboard)
     return jsonify({"status": "ok"}), 200
 
 
@@ -648,7 +736,7 @@ def sms_incoming():
             thread_id = lead_info.get("thread_id")
             if thread_id and lead_info.get("message_id"):
                 keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-                tg_edit(lead_info["message_id"], build_status_message(lead_info), keyboard)
+                tg_edit_topic(lead_info["message_id"], build_status_message(lead_info), keyboard)
         except Exception as e:
             logger.error(f"Extraction error: {e}")
 
@@ -676,11 +764,10 @@ def sms_incoming():
             lead_info["stage"] = 2
             keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
             updated_card = build_status_message(lead_info)
-            if thread_id:
-                tg_send_topic(thread_id, f"💳 Ссылка отправлена! Обновлённая карточка:\n\n{updated_card}", keyboard)
-            # Update the original card in topic
-            if lead_info.get("message_id") and thread_id:
-                tg_edit(lead_info["message_id"], updated_card, keyboard)
+            # Edit the existing card in topic — no new message
+            if thread_id and lead_info.get("message_id"):
+                tg_edit_topic(lead_info["message_id"], updated_card, keyboard)
+                tg_send_topic(thread_id, "📤 Ссылка на оплату отправлена клиенту!")
 
     return "", 204
 
