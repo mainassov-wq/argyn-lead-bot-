@@ -22,6 +22,10 @@ STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/test_00w5kwc
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
+# Argyn inspector bot (for nego payment notifications)
+ARGYN_BOT_TOKEN = os.environ.get("ARGYN_BOT_TOKEN", "")
+ARGYN_GROUP_ID  = os.environ.get("ARGYN_GROUP_ID", "-1003828934512")
+
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
 pending_calls = {}
@@ -633,7 +637,7 @@ def stripe_nego_webhook():
         except Exception as e:
             logger.error(f"Supabase nego unlock error: {e}")
 
-    # Send notification to topic or admin
+    # Send notification via Argyn inspector bot to correct topic
     msg = (f"💰 *Nego Strategy продана!*\n"
            f"🚗 {ymm or '—'}\n"
            f"👤 {client_name or '—'}\n"
@@ -642,8 +646,20 @@ def stripe_nego_webhook():
            f"📧 {customer_email or '—'}\n"
            f"{'✅ Стратегия разблокирована' if unlocked else '❌ Ошибка разблокировки'}")
 
-    if thread_id and GROUP_ID:
-        tg_send_topic(int(thread_id), msg)
+    argyn_api = f"https://api.telegram.org/bot{ARGYN_BOT_TOKEN}" if ARGYN_BOT_TOKEN else TELEGRAM_API
+    argyn_group = ARGYN_GROUP_ID if ARGYN_GROUP_ID else GROUP_ID
+
+    if thread_id and argyn_group:
+        try:
+            requests.post(f"{argyn_api}/sendMessage", json={
+                "chat_id": int(argyn_group),
+                "message_thread_id": int(thread_id),
+                "text": msg,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+        except Exception as e:
+            logger.error(f"Argyn bot notify error: {e}")
+            tg_send(msg)
     else:
         tg_send(msg)
 
