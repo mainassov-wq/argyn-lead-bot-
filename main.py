@@ -362,12 +362,36 @@ def post_call():
         external_number = inner_data.get("user_id", "")
     
     logger.info(f"Post-call: external_number={external_number}")
+    logger.info(f"Post-call full inner_data: {json.dumps(inner_data)}")
 
     if not external_number:
         logger.warning("No external_number found anywhere")
         return jsonify({"status": "ok"}), 200
 
-    logger.info(f"Post-call: sending SMS to {external_number}")
+    # ── Проверка: состоялся ли разговор ──────────────────────────────
+    call_duration = inner_data.get("call_duration_secs", 0)
+    conversation_status = inner_data.get("conversation_status", "")
+    analysis = inner_data.get("analysis", {})
+    call_successful = analysis.get("call_successful", None)
+    termination_reason = inner_data.get("termination_reason", "")
+
+    logger.info(f"Post-call: duration={call_duration}s status={conversation_status} successful={call_successful} reason={termination_reason}")
+
+    FAILED_REASONS = {"call_failed", "no_answer", "busy", "line_busy", "voicemail", "declined", "failed"}
+    if termination_reason in FAILED_REASONS:
+        logger.info(f"Звонок не состоялся (reason={termination_reason}), SMS не отправляем")
+        return jsonify({"status": "ok"}), 200
+
+    if call_successful is False or call_successful == "failure":
+        logger.info("Звонок неуспешный, SMS не отправляем")
+        return jsonify({"status": "ok"}), 200
+
+    if isinstance(call_duration, (int, float)) and call_duration < 15:
+        logger.info(f"Звонок слишком короткий ({call_duration}s), SMS не отправляем")
+        return jsonify({"status": "ok"}), 200
+    # ─────────────────────────────────────────────────────────────────
+
+    logger.info(f"Post-call: отправляем SMS на {external_number}")
 
     # Find lead by phone FIRST so we can build personalized pay link
     phone_digits = "".join(filter(str.isdigit, external_number))
