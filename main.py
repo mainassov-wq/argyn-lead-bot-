@@ -376,7 +376,7 @@ def receive_lead():
 
 
 def _handle_inbound_postcall(inner_data, caller_phone, analysis):
-    """Обрабатывает входящий звонок — шлёт карточку в Telegram."""
+    """Обрабатывает входящий звонок — создаёт топик в Telegram + SMS если нужно."""
     from datetime import datetime as _dt
     conversation_id = inner_data.get("conversation_id", "n/a")
     metadata = inner_data.get("metadata", {})
@@ -388,37 +388,76 @@ def _handle_inbound_postcall(inner_data, caller_phone, analysis):
     summary = analysis.get("transcript_summary", "Нет саммари")
     call_success = analysis.get("call_successful", "unknown")
 
+    # Collected data
+    dc = analysis.get("data_collection_results", {})
+    car_info = (dc.get("vehicle_make_model_year") or {}).get("value") or "—"
+    location = (dc.get("inspection_address") or {}).get("value") or "—"
+    timing = (dc.get("preferred_inspection_date_time") or {}).get("value") or "—"
+    payment_sent = (dc.get("payment_link_sent_confirmation") or {}).get("value") or False
+
+    # Transcript preview — fix None messages
     transcript = inner_data.get("transcript", [])
     preview = ""
     for turn in transcript[-6:]:
         role = "🤖" if turn.get("role") == "agent" else "👤"
-        msg = turn.get("message", "")[:120]
+        msg = (turn.get("message") or "")[:120]
+        if not msg:
+            continue
         preview += f"{role} {msg}\n"
 
     result_icon = "✅" if call_success == "success" else "❌"
-    msg = (
+    pay_icon = "✅ Отправлена" if payment_sent else "❌ Не отправлена"
+
+    card = (
         f"📞 *ВХОДЯЩИЙ ЗВОНОК (Google)*\n"
         f"{'━' * 28}\n"
         f"📱 Номер: `{caller_phone}`\n"
         f"🕐 Время: {start_time}\n"
         f"⏱ Длительность: {duration_str}\n"
         f"{result_icon} Результат: {call_success}\n\n"
+        f"🚗 Авто: {car_info}\n"
+        f"📍 Локация: {location}\n"
+        f"📅 Когда: {timing}\n"
+        f"💳 Ссылка: {pay_icon}\n\n"
         f"💬 *Саммари:*\n{summary[:400]}\n\n"
-        f"📝 *Превью диалога:*\n{preview}"
+        f"📝 *Превью:*\n{preview}"
         f"\n🆔 `{conversation_id}`"
     )
 
-    payload = {
-        "chat_id": GROUP_ID,
-        "text": msg,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    try:
-        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
-        logger.info(f"[INBOUND] Telegram notification sent for {caller_phone}")
-    except Exception as e:
-        logger.error(f"[INBOUND] Telegram error: {e}")
+    # Создаём топик для inbound звонка
+    topic_name = f"📞 {caller_phone[-10:]} | {car_info[:25]}"
+    thread_id = create_topic(topic_name)
+
+    if thread_id:
+        tg_send_topic(thread_id, card)
+        logger.info(f"[INBOUND] Topic created and card sent for {caller_phone}")
+    else:
+        # Fallback — в General
+        try:
+            requests.post(f"{TELEGRAM_API}/sendMessage", json={
+                "chat_id": GROUP_ID,
+                "text": card,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }, timeout=10)
+        except Exception as e:
+            logger.error(f"[INBOUND] Telegram fallback error: {e}")
+
+    # ── SMS с ссылкой если агент сказал что отправил но реально нет ──
+    if payment_sent:
+        pay_url = STRIPE_LINK
+        sms = (
+            f"Hi! Thanks for calling Argyn Auto 🚗\n\n"
+            f"Here's your inspection booking link:\n{pay_url}\n\n"
+            f"Questions? Call (647) 594-7510"
+        )
+        sid = send_sms(caller_phone, sms)
+        if thread_id:
+            if sid:
+                tg_send_topic(thread_id, "📤 SMS со ссылкой отправлено клиенту!")
+            else:
+                tg_send_topic(thread_id, "❌ Ошибка отправки SMS клиенту")
+        logger.info(f"[INBOUND] SMS sent to {caller_phone}: {sid}")
 
 @app.route("/postcall", methods=["POST"])
 def post_call():
