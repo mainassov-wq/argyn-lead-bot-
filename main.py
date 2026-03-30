@@ -28,6 +28,7 @@ ARGYN_GROUP_ID  = os.environ.get("ARGYN_GROUP_ID", "-1003828934512")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 ARGYN_API = f"https://api.telegram.org/bot{ARGYN_BOT_TOKEN}"
+INSPECTOR_BOT_URL = os.environ.get("INSPECTOR_BOT_URL", "")  # URL inspector_bot.py на Railway
 GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
 pending_calls = {}
 phone_to_lead = {}
@@ -41,19 +42,29 @@ INSPECTORS = {
 assigned_inspectors = {}
 
 
-def send_inspector_message(inspector_id, text, reply_markup=None):
-    payload = {"chat_id": inspector_id, "text": text, "parse_mode": "Markdown"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
+def notify_inspector_bot(lead_id, inspector_id, lead):
+    """Отправить назначение в inspector_bot.py."""
+    if not INSPECTOR_BOT_URL:
+        logger.error("INSPECTOR_BOT_URL not set")
+        return False
+    car = f"{lead.get('car', '')} {lead.get('model', '')}".strip()
     try:
-        r = requests.post(f"{ARGYN_API}/sendMessage", json=payload, timeout=10)
-        result = r.json()
-        if not result.get("ok"):
-            logger.error(f"Inspector message failed: {result}")
-        return result.get("result", {}).get("message_id")
+        r = requests.post(f"{INSPECTOR_BOT_URL}/assign", json={
+            "lead_id": lead_id,
+            "inspector_id": inspector_id,
+            "inspector_name": INSPECTORS.get(inspector_id, "Inspector"),
+            "client_name": lead.get("name", "—"),
+            "car": car,
+            "year": lead.get("year", "—"),
+            "address": lead.get("address", "—"),
+            "dealer": lead.get("dealer", "—"),
+            "timing": lead.get("timing", "—"),
+            "client_phone": lead.get("phone", "—"),
+        }, timeout=10)
+        return r.status_code == 200
     except Exception as e:
-        logger.error(f"Inspector message error: {e}")
-        return None
+        logger.error(f"Inspector bot notify error: {e}")
+        return False
 
 
 def build_status_message(lead):
@@ -590,62 +601,15 @@ def telegram_webhook():
                 assigned_inspectors[lead_id] = inspector_id
                 thread_id = lead.get("thread_id")
 
-                # Детали заказа для инспектора
-                car = f"{lead.get('car', '')} {lead.get('model', '')}".strip()
-                year = lead.get("year", "—")
-                address = lead.get("address", "—")
-                timing = lead.get("timing", "—")
-                client_phone = lead.get("phone", "—")
-                client_name = lead.get("name", "—")
-                dealer = lead.get("dealer", "—")
-
-                msg = (
-                    f"🔔 *Новый заказ назначен тебе!*\n\n"
-                    f"👤 Клиент: {client_name}\n"
-                    f"🚗 Машина: {year} {car}\n"
-                    f"📍 Адрес: {address}\n"
-                    f"🏪 Dealer/Private: {dealer}\n"
-                    f"📅 Время: {timing}\n"
-                    f"📱 Телефон: {client_phone}\n\n"
-                    f"Свяжись с клиентом и подтверди время."
-                )
-
-                accept_keyboard = {"inline_keyboard": [[
-                    {"text": "✅ Принял", "callback_data": f"accepted_{lead_id}"}
-                ]]}
-                send_inspector_message(inspector_id, msg, accept_keyboard)
+                ok = notify_inspector_bot(lead_id, inspector_id, lead)
 
                 if thread_id:
-                    tg_send_topic(thread_id, f"👨‍🔧 Назначен инспектор: *{inspector_name}*")
+                    if ok:
+                        tg_send_topic(thread_id, f"👨‍🔧 Назначен инспектор: *{inspector_name}*\nОжидаем подтверждения...")
+                    else:
+                        tg_send_topic(thread_id, f"❌ Ошибка отправки уведомления инспектору. Проверь INSPECTOR_BOT_URL.")
             else:
                 tg_send("❌ Лид не найден.")
-
-    elif cb_data.startswith("accepted_"):
-        lead_id = cb_data.replace("accepted_", "")
-        lead = pending_calls.get(lead_id)
-        inspector_id = assigned_inspectors.get(lead_id)
-        inspector_name = INSPECTORS.get(inspector_id, "Inspector") if inspector_id else "Inspector"
-
-        if lead:
-            client_phone = lead.get("phone", "")
-            thread_id = lead.get("thread_id")
-
-            # SMS клиенту
-            if client_phone:
-                sms = (
-                    "Your inspection is confirmed! ✅\n\n"
-                    "Our inspector will reach out to you shortly to coordinate the details.\n\n"
-                    "Questions? Call (647) 594-7510"
-                )
-                send_sms(client_phone, sms)
-
-            # Уведомление в топик
-            if thread_id:
-                tg_send_topic(thread_id, f"✅ *{inspector_name}* принял заказ. SMS клиенту отправлено.")
-
-            # Подтверждение инспектору
-            if inspector_id:
-                send_inspector_message(inspector_id, "✅ Отлично! Клиент получил уведомление. Удачи на инспекции! 🚗")
 
     elif cb_data.startswith("done_"):
         lead_id = cb_data.replace("done_", "")
@@ -853,6 +817,38 @@ def health():
 
 
 
+
+
+@app.route("/inspector-accepted", methods=["POST"])
+def inspector_accepted():
+    """inspector_bot.py вызывает этот endpoint когда инспектор нажал Принял."""
+    data = request.json or {}
+    lead_id = data.get("lead_id")
+    inspector_name = data.get("inspector_name", "Inspector")
+
+    lead = pending_calls.get(lead_id)
+    if not lead:
+        logger.warning(f"inspector-accepted: lead {lead_id} not found")
+        return jsonify({"status": "ok"}), 200
+
+    client_phone = lead.get("phone", "")
+    thread_id = lead.get("thread_id")
+
+    # SMS клиенту
+    if client_phone:
+        sms = (
+            "Your inspection is confirmed! ✅\n\n"
+            "Our inspector will reach out to you shortly to coordinate the details.\n\n"
+            "Questions? Call (647) 594-7510"
+        )
+        send_sms(client_phone, sms)
+        logger.info(f"Confirmation SMS sent to {client_phone}")
+
+    # Уведомление в топик
+    if thread_id:
+        tg_send_topic(thread_id, f"✅ *{inspector_name}* принял заказ. SMS клиенту отправлено.")
+
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/sms-incoming", methods=["POST"])
