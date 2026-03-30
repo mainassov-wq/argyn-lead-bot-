@@ -36,7 +36,7 @@ phone_to_lead = {}
 # ─── INSPECTORS ───────────────────────────────────────────────────────────────
 # Добавляй инспекторов сюда: {telegram_id: "Имя"}
 INSPECTORS = {
-    8317732562: "Iqbal",
+    8317732562: "Inspector 1",
 }
 # Хранит назначения: {lead_id: inspector_id}
 assigned_inspectors = {}
@@ -373,6 +373,53 @@ def receive_lead():
     return jsonify({"status": "ok"}), 200
 
 
+
+
+def _handle_inbound_postcall(inner_data, caller_phone, analysis):
+    """Обрабатывает входящий звонок — шлёт карточку в Telegram."""
+    from datetime import datetime as _dt
+    conversation_id = inner_data.get("conversation_id", "n/a")
+    metadata = inner_data.get("metadata", {})
+    duration = metadata.get("call_duration_secs", 0)
+    start_ts = metadata.get("start_time_unix_secs", 0)
+    start_time = _dt.utcfromtimestamp(start_ts).strftime("%d.%m.%Y %H:%M UTC") if start_ts else "n/a"
+    duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else "0:00"
+
+    summary = analysis.get("transcript_summary", "Нет саммари")
+    call_success = analysis.get("call_successful", "unknown")
+
+    transcript = inner_data.get("transcript", [])
+    preview = ""
+    for turn in transcript[-6:]:
+        role = "🤖" if turn.get("role") == "agent" else "👤"
+        msg = turn.get("message", "")[:120]
+        preview += f"{role} {msg}\n"
+
+    result_icon = "✅" if call_success == "success" else "❌"
+    msg = (
+        f"📞 *ВХОДЯЩИЙ ЗВОНОК (Google)*\n"
+        f"{'━' * 28}\n"
+        f"📱 Номер: `{caller_phone}`\n"
+        f"🕐 Время: {start_time}\n"
+        f"⏱ Длительность: {duration_str}\n"
+        f"{result_icon} Результат: {call_success}\n\n"
+        f"💬 *Саммари:*\n{summary[:400]}\n\n"
+        f"📝 *Превью диалога:*\n{preview}"
+        f"\n🆔 `{conversation_id}`"
+    )
+
+    payload = {
+        "chat_id": GROUP_ID,
+        "text": msg,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+    try:
+        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
+        logger.info(f"[INBOUND] Telegram notification sent for {caller_phone}")
+    except Exception as e:
+        logger.error(f"[INBOUND] Telegram error: {e}")
+
 @app.route("/postcall", methods=["POST"])
 def post_call():
     import json
@@ -403,8 +450,20 @@ def post_call():
         logger.warning("No external_number found anywhere")
         return jsonify({"status": "ok"}), 200
 
-    # ── Проверка: предложил ли агент ссылку на оплату ────────────────
+    # ── Определяем направление: outbound = мы звонили, inbound = клиент звонил сам
+    dyn_vars = inner_data.get("conversation_initiation_client_data", {}).get("dynamic_variables", {})
+    is_outbound = bool(dyn_vars.get("customer_name"))
+    logger.info(f"Post-call: direction={'outbound' if is_outbound else 'inbound'} number={external_number}")
+
     analysis = inner_data.get("analysis", {})
+
+    # ── INBOUND: входящий звонок с Google — шлём карточку в Telegram ──
+    if not is_outbound:
+        _handle_inbound_postcall(inner_data, external_number, analysis)
+        return jsonify({"status": "ok"}), 200
+    # ──────────────────────────────────────────────────────────────────
+
+    # ── OUTBOUND: проверяем предложил ли агент ссылку на оплату ──────
     criteria_results = analysis.get("evaluation_criteria_results", {})
     payment_offered = criteria_results.get("payment_link_offered", {}).get("result")
     logger.info(f"Post-call: payment_link_offered={payment_offered}")
