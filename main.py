@@ -392,6 +392,36 @@ def post_call():
     logger.info(f"Post-call: matched lead_id={lead_id} for {external_number}")
     lead = pending_calls.get(lead_id) if lead_id else None
 
+    # Заполняем карточку лида данными из ElevenLabs data_collection_results
+    if lead:
+        dc = analysis.get("data_collection_results", {})
+
+        vehicle_year = dc.get("vehicle_year", {}).get("value")
+        if vehicle_year:
+            lead["year"] = str(vehicle_year)
+
+        vehicle_make_model = dc.get("vehicle_make_model", {}).get("value")
+        if vehicle_make_model:
+            lead["car"] = vehicle_make_model
+
+        inspection_address = dc.get("inspection_address", {}).get("value")
+        if inspection_address:
+            lead["address"] = inspection_address
+
+        dealer_val = dc.get("dealer_or_private", {}).get("value")
+        if dealer_val:
+            lead["dealer"] = dealer_val
+
+        timing_val = dc.get("inspection_timing", {}).get("value")
+        if timing_val:
+            lead["timing"] = str(timing_val)
+
+        present_val = dc.get("customer_present", {}).get("value")
+        if present_val is not None:
+            lead["present"] = "Да" if present_val is True else ("Нет" if present_val is False else str(present_val))
+
+        logger.info(f"Post-call lead updated: year={vehicle_year} address={inspection_address} make_model={vehicle_make_model}")
+
     # Build personalized pay link with client_reference_id
     pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}" if lead_id else STRIPE_LINK
     sms_message = (
