@@ -22,14 +22,38 @@ STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/test_00w5kwc
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# Argyn inspector bot (for nego payment notifications)
-ARGYN_BOT_TOKEN = os.environ.get("ARGYN_BOT_TOKEN", "")
+# Argyn inspector bot (for nego payment notifications + inspector assignments)
+ARGYN_BOT_TOKEN = os.environ.get("ARGYN_BOT_TOKEN", "8744558713:AAHXIYziu5k8PkpBcur4x9FokkiTmBJnFfI")
 ARGYN_GROUP_ID  = os.environ.get("ARGYN_GROUP_ID", "-1003828934512")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+ARGYN_API = f"https://api.telegram.org/bot{ARGYN_BOT_TOKEN}"
 GROUP_ID = os.environ.get("GROUP_ID", "-1003506681231")
 pending_calls = {}
 phone_to_lead = {}
+
+# ─── INSPECTORS ───────────────────────────────────────────────────────────────
+# Добавляй инспекторов сюда: {telegram_id: "Имя"}
+INSPECTORS = {
+    8317732562: "Inspector 1",
+}
+# Хранит назначения: {lead_id: inspector_id}
+assigned_inspectors = {}
+
+
+def send_inspector_message(inspector_id, text, reply_markup=None):
+    payload = {"chat_id": inspector_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        r = requests.post(f"{ARGYN_API}/sendMessage", json=payload, timeout=10)
+        result = r.json()
+        if not result.get("ok"):
+            logger.error(f"Inspector message failed: {result}")
+        return result.get("result", {}).get("message_id")
+    except Exception as e:
+        logger.error(f"Inspector message error: {e}")
+        return None
 
 
 def build_status_message(lead):
@@ -553,6 +577,76 @@ def telegram_webhook():
             else:
                 tg_send(f"❌ Ошибка ElevenLabs: {resp.status_code}\n{resp.text}")
 
+    elif cb_data.startswith("assign_"):
+        # Format: assign_{lead_id}_{inspector_id}
+        parts = cb_data.split("_", 2)
+        if len(parts) == 3:
+            _, lead_id, inspector_id_str = parts
+            inspector_id = int(inspector_id_str)
+            lead = pending_calls.get(lead_id)
+            inspector_name = INSPECTORS.get(inspector_id, "Inspector")
+
+            if lead:
+                assigned_inspectors[lead_id] = inspector_id
+                thread_id = lead.get("thread_id")
+
+                # Детали заказа для инспектора
+                car = f"{lead.get('car', '')} {lead.get('model', '')}".strip()
+                year = lead.get("year", "—")
+                address = lead.get("address", "—")
+                timing = lead.get("timing", "—")
+                client_phone = lead.get("phone", "—")
+                client_name = lead.get("name", "—")
+                dealer = lead.get("dealer", "—")
+
+                msg = (
+                    f"🔔 *Новый заказ назначен тебе!*\n\n"
+                    f"👤 Клиент: {client_name}\n"
+                    f"🚗 Машина: {year} {car}\n"
+                    f"📍 Адрес: {address}\n"
+                    f"🏪 Dealer/Private: {dealer}\n"
+                    f"📅 Время: {timing}\n"
+                    f"📱 Телефон: {client_phone}\n\n"
+                    f"Свяжись с клиентом и подтверди время."
+                )
+
+                accept_keyboard = {"inline_keyboard": [[
+                    {"text": "✅ Принял", "callback_data": f"accepted_{lead_id}"}
+                ]]}
+                send_inspector_message(inspector_id, msg, accept_keyboard)
+
+                if thread_id:
+                    tg_send_topic(thread_id, f"👨‍🔧 Назначен инспектор: *{inspector_name}*")
+            else:
+                tg_send("❌ Лид не найден.")
+
+    elif cb_data.startswith("accepted_"):
+        lead_id = cb_data.replace("accepted_", "")
+        lead = pending_calls.get(lead_id)
+        inspector_id = assigned_inspectors.get(lead_id)
+        inspector_name = INSPECTORS.get(inspector_id, "Inspector") if inspector_id else "Inspector"
+
+        if lead:
+            client_phone = lead.get("phone", "")
+            thread_id = lead.get("thread_id")
+
+            # SMS клиенту
+            if client_phone:
+                sms = (
+                    "Your inspection is confirmed! ✅\n\n"
+                    "Our inspector will reach out to you shortly to coordinate the details.\n\n"
+                    "Questions? Call (647) 594-7510"
+                )
+                send_sms(client_phone, sms)
+
+            # Уведомление в топик
+            if thread_id:
+                tg_send_topic(thread_id, f"✅ *{inspector_name}* принял заказ. SMS клиенту отправлено.")
+
+            # Подтверждение инспектору
+            if inspector_id:
+                send_inspector_message(inspector_id, "✅ Отлично! Клиент получил уведомление. Удачи на инспекции! 🚗")
+
     elif cb_data.startswith("done_"):
         lead_id = cb_data.replace("done_", "")
         lead = pending_calls.get(lead_id)
@@ -560,6 +654,7 @@ def telegram_webhook():
             tid = lead.get("thread_id")
             phone_to_lead.pop(lead["phone"], None)
             pending_calls.pop(lead_id, None)
+            assigned_inspectors.pop(lead_id, None)
             if tid:
                 tg_send_topic(tid, "✅ Лид обработан.")
             else:
@@ -636,6 +731,13 @@ def stripe_webhook():
                     tg_send_topic(thread_id, "📱 SMS с подтверждением отправлено клиенту")
             else:
                 logger.error(f"Failed to send confirmation SMS to {client_phone}")
+
+        # Кнопка назначить инспектора
+        if thread_id:
+            inspector_buttons = [[{"text": f"👨‍🔧 {name}", "callback_data": f"assign_{lead_id}_{iid}"}]
+                                  for iid, name in INSPECTORS.items()]
+            inspector_keyboard = {"inline_keyboard": inspector_buttons}
+            tg_send_topic(thread_id, "👨‍🔧 *Назначь инспектора:*", inspector_keyboard)
 
     return jsonify({"status": "ok"}), 200
 
