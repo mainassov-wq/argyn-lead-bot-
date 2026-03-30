@@ -368,26 +368,14 @@ def post_call():
         logger.warning("No external_number found anywhere")
         return jsonify({"status": "ok"}), 200
 
-    # ── Проверка: состоялся ли разговор ──────────────────────────────
-    call_duration = inner_data.get("call_duration_secs", 0)
-    conversation_status = inner_data.get("conversation_status", "")
+    # ── Проверка: предложил ли агент ссылку на оплату ────────────────
     analysis = inner_data.get("analysis", {})
-    call_successful = analysis.get("call_successful", None)
-    termination_reason = inner_data.get("termination_reason", "")
+    criteria_results = analysis.get("evaluation_criteria_results", {})
+    payment_offered = criteria_results.get("payment_link_offered", {}).get("result")
+    logger.info(f"Post-call: payment_link_offered={payment_offered}")
 
-    logger.info(f"Post-call: duration={call_duration}s status={conversation_status} successful={call_successful} reason={termination_reason}")
-
-    FAILED_REASONS = {"call_failed", "no_answer", "busy", "line_busy", "voicemail", "declined", "failed"}
-    if termination_reason in FAILED_REASONS:
-        logger.info(f"Звонок не состоялся (reason={termination_reason}), SMS не отправляем")
-        return jsonify({"status": "ok"}), 200
-
-    if call_successful is False or call_successful == "failure":
-        logger.info("Звонок неуспешный, SMS не отправляем")
-        return jsonify({"status": "ok"}), 200
-
-    if isinstance(call_duration, (int, float)) and call_duration < 15:
-        logger.info(f"Звонок слишком короткий ({call_duration}s), SMS не отправляем")
+    if payment_offered != "success":
+        logger.info("Агент не предложил ссылку на оплату, SMS не отправляем")
         return jsonify({"status": "ok"}), 200
     # ─────────────────────────────────────────────────────────────────
 
