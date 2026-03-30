@@ -612,6 +612,7 @@ def stripe_webhook():
     if lead:
         lead["stage"] = 3
         thread_id = lead.get("thread_id")
+        client_phone = lead.get("phone", "")
         updated = build_status_message(lead)
         keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
         if thread_id:
@@ -620,6 +621,21 @@ def stripe_webhook():
             tg_send_topic(thread_id, f"💳 *Оплата получена!* {amount_str} CAD")
         else:
             tg_send(f"💳 *Оплата получена!*\n👤 {customer_name}\n📱 {phone}\n💰 {amount_str} CAD")
+
+        # Автоматический SMS клиенту после оплаты
+        if client_phone:
+            sms_confirmation = (
+                "Payment received! ✅\n\n"
+                "Our inspector will contact you within 2 hours to confirm the exact inspection time.\n\n"
+                "Questions? Reply to this message or call (647) 594-7510"
+            )
+            sid = send_sms(client_phone, sms_confirmation)
+            if sid:
+                logger.info(f"Confirmation SMS sent to {client_phone}")
+                if thread_id:
+                    tg_send_topic(thread_id, "📱 SMS с подтверждением отправлено клиенту")
+            else:
+                logger.error(f"Failed to send confirmation SMS to {client_phone}")
 
     return jsonify({"status": "ok"}), 200
 
