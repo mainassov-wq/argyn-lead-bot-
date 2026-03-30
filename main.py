@@ -443,9 +443,33 @@ def _handle_inbound_postcall(inner_data, caller_phone, analysis):
         except Exception as e:
             logger.error(f"[INBOUND] Telegram fallback error: {e}")
 
+    # ── Регистрируем лид в памяти чтобы Stripe webhook нашёл топик ──
+    phone_digits = "".join(filter(str.isdigit, caller_phone))
+    lead_id = f"inbound_{phone_digits}"
+    inbound_lead = {
+        "name": car_info,
+        "phone": caller_phone,
+        "car": car_info,
+        "model": "",
+        "location": location,
+        "contact_method": "call",
+        "stage": 2 if payment_sent else 1,
+        "message_id": None,
+        "thread_id": thread_id,
+        "year": "",
+        "address": location,
+        "timing": timing,
+        "dealer": "—",
+        "present": "—",
+        "source": "inbound",
+    }
+    pending_calls[lead_id] = inbound_lead
+    phone_to_lead[caller_phone] = lead_id
+    logger.info(f"[INBOUND] Lead registered: {lead_id} thread={thread_id}")
+
     # ── SMS с ссылкой если агент сказал что отправил но реально нет ──
     if payment_sent:
-        pay_url = STRIPE_LINK
+        pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}"
         sms = (
             f"Hi! Thanks for calling Argyn Auto 🚗\n\n"
             f"Here's your inspection booking link:\n{pay_url}\n\n"
