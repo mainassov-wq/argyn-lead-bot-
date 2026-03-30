@@ -36,7 +36,7 @@ phone_to_lead = {}
 # ─── INSPECTORS ───────────────────────────────────────────────────────────────
 # Добавляй инспекторов сюда: {telegram_id: "Имя"}
 INSPECTORS = {
-    8317732562: "Inspector 1",
+    8317732562: "Iqbal",
 }
 # Хранит назначения: {lead_id: inspector_id}
 assigned_inspectors = {}
