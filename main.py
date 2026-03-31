@@ -1,6 +1,9 @@
 import os
 import logging
 import requests
+import time
+import random
+import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -216,6 +219,7 @@ def send_sms(to_number, message):
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 sms_conversations = {}  # phone -> list of messages
 paused_conversations = set()  # phones where bot is paused
+unknown_number_asked = set()  # phones we asked "do you want inspection?"
 
 SMS_SYSTEM_PROMPT = """You are Alex, a booking coordinator for ARGYN AUTO in Toronto. You are NOT an AI — you're a real person texting from the office.
 
@@ -975,95 +979,156 @@ def inspector_accepted():
 
 @app.route("/sms-incoming", methods=["POST"])
 def sms_incoming():
-    """Twilio sends incoming SMS here"""
+    """Twilio sends incoming SMS here — returns 200 immediately, processes in background"""
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
     logger.info(f"Incoming SMS from {from_number}: {body}")
 
-    # Find lead info
-    lead_id = phone_to_lead.get(from_number)
-    lead_info = pending_calls.get(lead_id) if lead_id else None
+    # Respond to Twilio immediately (fix: prevents duplicate SMS on timeout)
+    def process():
+        _handle_incoming_sms(from_number, body)
 
-    # Forward to topic first
-    thread_id_early = lead_info.get("thread_id") if lead_info else None
-    if thread_id_early:
-        tg_send_topic(thread_id_early, f"👤 *Клиент:* {body}")
-
-    # If bot is paused — don't respond
-    if from_number in paused_conversations:
-        return "", 204
-
-    # Get AI response
-    ai_response = get_ai_response(from_number, body, lead_info)
-
-    # Extract details from conversation
-    if lead_info and ANTHROPIC_API_KEY:
-        try:
-            import json as json_mod
-            history = sms_conversations.get(from_number, [])
-            conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in history[-12:]])
-            extract_resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json={
-                    "model": "claude-haiku-4-5",
-                    "max_tokens": 150,
-                    "system": "Extract from this SMS conversation. Return ONLY valid JSON: {year, address, timing, present}. Use null if not mentioned.",
-                    "messages": [{"role": "user", "content": conv_text}]
-                },
-                timeout=8
-            )
-            raw = extract_resp.json()["content"][0]["text"].strip()
-            logger.info(f"Extraction result: {raw}")
-            # Strip markdown code blocks if present
-            clean = raw.replace("```json", "").replace("```", "").strip()
-            extracted = json_mod.loads(clean)
-            if extracted.get("year"): lead_info["year"] = str(extracted["year"])
-            if extracted.get("address"): lead_info["address"] = extracted["address"]
-            if extracted.get("timing"): lead_info["timing"] = extracted["timing"]
-            if extracted.get("present"): lead_info["present"] = extracted["present"]
-            # Update card in topic after extraction
-            thread_id = lead_info.get("thread_id")
-            if thread_id and lead_info.get("message_id"):
-                keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-                tg_edit_topic(lead_info["message_id"], build_status_message(lead_info), keyboard)
-        except Exception as e:
-            logger.error(f"Extraction error: {e}")
-
-    # Check if we should send payment link
-    send_link = "SEND_PAYMENT_LINK" in ai_response
-    ai_response = ai_response.replace("SEND_PAYMENT_LINK", "").strip()
-
-    # Forward to topic
-    thread_id = lead_info.get("thread_id") if lead_info else None
-    if thread_id:
-        tg_send_topic(thread_id, f"🤖 *Alex:* {ai_response}")
-
-    # Delay 6-10 seconds to feel more human
-    import time, random
-    time.sleep(random.randint(2, 4))
-
-    # Send SMS response
-    send_sms(from_number, ai_response)
-
-    # Send payment link if triggered
-    if send_link:
-        pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}" if lead_id else STRIPE_LINK
-        send_sms(from_number, f"Here's your secure booking link 👇\n{pay_url}")
-        if lead_id and lead_info:
-            lead_info["stage"] = 2
-            keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
-            updated_card = build_status_message(lead_info)
-            # Edit the existing card in topic — no new message
-            if thread_id and lead_info.get("message_id"):
-                tg_edit_topic(lead_info["message_id"], updated_card, keyboard)
-                tg_send_topic(thread_id, "📤 Ссылка на оплату отправлена клиенту!")
-
+    threading.Thread(target=process, daemon=True).start()
     return "", 204
+
+
+def _handle_incoming_sms(from_number, body):
+    """All SMS processing happens here in background thread"""
+    try:
+        lead_id = phone_to_lead.get(from_number)
+        lead_info = pending_calls.get(lead_id) if lead_id else None
+        thread_id = lead_info.get("thread_id") if lead_info else None
+
+        # Unknown number — not in our system
+        if not lead_info:
+            body_lower = body.lower().strip()
+            YES_WORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "да", "конечно", "yup", "absolutely", "y"}
+            NO_WORDS = {"no", "nope", "нет", "not", "n", "nah"}
+
+            if from_number in unknown_number_asked:
+                if any(w in body_lower for w in YES_WORDS) or body_lower in YES_WORDS:
+                    # Said yes — create lead and start dialogue
+                    unknown_number_asked.discard(from_number)
+                    phone_digits = "".join(filter(str.isdigit, from_number))
+                    new_lead_id = f"sms{phone_digits[-10:]}"
+                    new_lead = {"phone": from_number, "stage": 0, "source": "sms_direct"}
+                    pending_calls[new_lead_id] = new_lead
+                    phone_to_lead[from_number] = new_lead_id
+                    opener = "Great! Let's get started. What vehicle are you looking to inspect? (year, make, model)"
+                    time.sleep(random.randint(1, 3))
+                    send_sms(from_number, opener)
+                    sms_conversations[from_number] = [{"role": "assistant", "content": opener}]
+                    return
+                elif any(w in body_lower for w in NO_WORDS) or body_lower in NO_WORDS:
+                    unknown_number_asked.discard(from_number)
+                    time.sleep(random.randint(1, 2))
+                    send_sms(from_number, "No problem! If you ever need a vehicle inspection, visit us at argynauto.ca 👍")
+                    return
+                else:
+                    # Something meaningful — treat as yes, fall through to AI
+                    unknown_number_asked.discard(from_number)
+                    phone_digits = "".join(filter(str.isdigit, from_number))
+                    new_lead_id = f"sms{phone_digits[-10:]}"
+                    new_lead = {"phone": from_number, "stage": 0, "source": "sms_direct"}
+                    pending_calls[new_lead_id] = new_lead
+                    phone_to_lead[from_number] = new_lead_id
+                    lead_id = new_lead_id
+                    lead_info = new_lead
+            else:
+                # First contact — ask them
+                unknown_number_asked.add(from_number)
+                time.sleep(random.randint(1, 2))
+                send_sms(from_number, "Hey! 👋 Are you looking to book a pre-purchase vehicle inspection?")
+                return
+
+        # If bot is paused — only forward to Telegram
+        if from_number in paused_conversations:
+            if thread_id:
+                tg_send_topic(thread_id, f"👤 *Клиент:* {body}")
+            return
+
+        # If lead already paid — auto-reply, no AI
+        if lead_info and lead_info.get("stage", 0) >= 3:
+            if thread_id:
+                tg_send_topic(thread_id, f"👤 *Клиент:* {body}")
+            auto_reply = (
+                "Thanks for reaching out! 👋 "
+                "Our inspector will contact you within 2 hours to confirm the inspection time. "
+                "Questions? Visit argynauto.ca"
+            )
+            time.sleep(random.randint(2, 4))
+            send_sms(from_number, auto_reply)
+            if thread_id:
+                tg_send_topic(thread_id, f"🤖 *Alex (авто):* {auto_reply}")
+            return
+
+        # Forward client message to Telegram topic
+        if thread_id:
+            tg_send_topic(thread_id, f"👤 *Клиент:* {body}")
+
+        # Get AI response
+        ai_response = get_ai_response(from_number, body, lead_info)
+
+        # Extract details from conversation
+        if lead_info and ANTHROPIC_API_KEY:
+            try:
+                import json as json_mod
+                history = sms_conversations.get(from_number, [])
+                conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in history[-12:]])
+                extract_resp = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json"
+                    },
+                    json={
+                        "model": "claude-haiku-4-5",
+                        "max_tokens": 150,
+                        "system": "Extract from this SMS conversation. Return ONLY valid JSON: {year, address, timing, present}. Use null if not mentioned.",
+                        "messages": [{"role": "user", "content": conv_text}]
+                    },
+                    timeout=8
+                )
+                raw = extract_resp.json()["content"][0]["text"].strip()
+                clean = raw.replace("```json", "").replace("```", "").strip()
+                extracted = json_mod.loads(clean)
+                if extracted.get("year"): lead_info["year"] = str(extracted["year"])
+                if extracted.get("address"): lead_info["address"] = extracted["address"]
+                if extracted.get("timing"): lead_info["timing"] = extracted["timing"]
+                if extracted.get("present"): lead_info["present"] = extracted["present"]
+                if thread_id and lead_info.get("message_id"):
+                    keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
+                    tg_edit_topic(lead_info["message_id"], build_status_message(lead_info), keyboard)
+            except Exception as e:
+                logger.error(f"Extraction error: {e}")
+
+        # Check if we should send payment link
+        send_link = "SEND_PAYMENT_LINK" in ai_response
+        ai_response = ai_response.replace("SEND_PAYMENT_LINK", "").strip()
+
+        # Forward AI response to Telegram
+        if thread_id:
+            tg_send_topic(thread_id, f"🤖 *Alex:* {ai_response}")
+
+        # Human delay + send SMS
+        time.sleep(random.randint(2, 4))
+        send_sms(from_number, ai_response)
+
+        # Send payment link if triggered
+        if send_link:
+            pay_url = f"{STRIPE_LINK}?client_reference_id={lead_id}" if lead_id else STRIPE_LINK
+            send_sms(from_number, f"Here's your secure booking link 👇\n{pay_url}")
+            if lead_id and lead_info:
+                lead_info["stage"] = 2
+                keyboard = {"inline_keyboard": [[{"text": "✅ Обработан", "callback_data": f"done_{lead_id}"}]]}
+                if thread_id and lead_info.get("message_id"):
+                    tg_edit_topic(lead_info["message_id"], build_status_message(lead_info), keyboard)
+                    tg_send_topic(thread_id, "📤 Ссылка на оплату отправлена клиенту!")
+
+    except Exception as e:
+        logger.error(f"SMS processing error: {e}")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
