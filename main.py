@@ -36,7 +36,7 @@ phone_to_lead = {}
 # ─── INSPECTORS ───────────────────────────────────────────────────────────────
 # Добавляй инспекторов сюда: {telegram_id: "Имя"}
 INSPECTORS = {
-    8317732562: "Inspector 1",
+    8317732562: "Iqbal",
 }
 # Хранит назначения: {lead_id: inspector_id}
 assigned_inspectors = {}
@@ -445,7 +445,7 @@ def _handle_inbound_postcall(inner_data, caller_phone, analysis):
 
     # ── Регистрируем лид в памяти чтобы Stripe webhook нашёл топик ──
     phone_digits = "".join(filter(str.isdigit, caller_phone))
-    lead_id = f"inbound_{phone_digits}"
+    lead_id = f"in{phone_digits}"
     inbound_lead = {
         "name": car_info,
         "phone": caller_phone,
