@@ -18,7 +18,7 @@ AGENT_PHONE_NUMBER_ID = os.environ.get("AGENT_PHONE_NUMBER_ID", "phnum_8301kkqss
 TWILIO_SID = os.environ.get("TWILIO_SID", "")
 TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN", "")
 TWILIO_FROM = os.environ.get("TWILIO_FROM", "+16474933481")
-STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/test_00w5kwcXQ644cn78q0fMA00")
+STRIPE_LINK = os.environ.get("STRIPE_LINK", "https://buy.stripe.com/00w5kwcXQ644cn78q0fMA00")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
@@ -36,7 +36,7 @@ phone_to_lead = {}
 # ─── INSPECTORS ───────────────────────────────────────────────────────────────
 # Добавляй инспекторов сюда: {telegram_id: "Имя"}
 INSPECTORS = {
-    8317732562: "Iqbal",
+    8317732562: "Inspector 1",
 }
 # Хранит назначения: {lead_id: inspector_id}
 assigned_inspectors = {}
