@@ -240,18 +240,18 @@ CONVERSATION FLOW — follow this EXACT ORDER, one question per message:
 2. Ask: year and trim of the vehicle
 3. Ask: dealer or private seller?
 4. Ask: exact address or dealership name where the car is
-5. Ask: when do they want the inspection? (today, tomorrow, specific day)
-6. Ask: "And would you like to be there during the inspection, or are you okay with us handling it directly with the seller/dealer?"
-7. *** PRE-PAYMENT CHECK — MANDATORY, NEVER SKIP ***
+5. Ask: "Would you like to be there during the inspection, or are you okay with us handling it directly with the seller/dealer?"
+6. *** PRE-PAYMENT CHECK — MANDATORY, NEVER SKIP ***
    Ask: "Before I send you the link — any questions about how the inspection works? 😊"
-   - If they have questions → answer them HONESTLY and SHORT, then go to step 8
-   - If no questions → go to step 8
-8. Price + payment in ONE message:
-   "It's $199 flat, no hidden fees — full report with photos and repair costs within 24-48 hours. Want me to send the payment link to this number?"
-9. When they confirm → SEND_PAYMENT_LINK at end:
+   - If they have questions → answer them HONESTLY and SHORT, then go to step 7
+   - If no questions → go to step 7
+7. Price + payment in ONE message:
+   "It's $199 flat, no hidden fees — full report with photos and repair costs within 24-48 hours. Once you pay, the team will reach out to confirm the exact inspection time. Want me to send the payment link to this number?"
+8. When they confirm → SEND_PAYMENT_LINK at end:
    "Perfect! Sending it over now 👍 SEND_PAYMENT_LINK"
 
-*** CRITICAL: NEVER skip step 7. NEVER go from step 6 directly to step 8. ***
+*** CRITICAL: NEVER skip step 6. NEVER go from step 5 directly to step 7. ***
+*** NEVER ask about timing/scheduling before payment — timing is confirmed AFTER payment by the team ***
 *** ALWAYS say "24-48 hours" never just "24 hours" ***
 
 OPENING MESSAGE (use this for first contact):
@@ -317,10 +317,12 @@ OBJECTION HANDLING (keep responses short!):
 - "Do I need to be there?" → "Nope! We just need access to the car. If it's at a dealer we deal with them directly."
 - "How do I get the report?" → "You'll get a link to your full report online — photos, grades, repair costs, negotiation notes, everything. Usually within 24 hours."
 - "Are you AI?" → "Ha nope, real person here 😄"
-- "Can I cancel?" → "Yeah reach out to the team — info's on argynauto.ca"
-- "Car got sold" / "Car is no longer available" → "No worries at all! Your inspection is transferable — just send us the new car details and we'll book it in, no extra charge 👍"
-- "What if car sells before inspection?" → "If that happens, no stress — we transfer your booking to another car for free. You don't lose anything."
-- "Can I get a refund?" → "If the car sells before we inspect, we transfer to another car at no cost. For anything else, reach out to the team and they'll sort it out."
+- "Can I cancel?" → "Yeah — if it's more than 24 hours before the inspection, full refund no questions asked. Less than 24 hours it's 50% back or reschedule for a small $40 fee. Just reach out to the team ASAP at support@argynauto.ca or call (647) 493-3481"
+- "Car got sold" / "Car is no longer available" → "No worries! If you let us know more than 24 hours before, we give you a full credit to use on another car. Less than 24 hours it's treated as a late cancellation. Just reach out to the team ASAP 👍"
+- "What if car sells before inspection?" → "If that happens, just let us know as early as possible. More than 24 hours notice = full credit for another car. We want to make it easy for you."
+- "Can I get a refund?" → "Yeah — more than 24 hours before the inspection = full refund. Less than 24 hours = 50% back. Same-day cancellations unfortunately no refund, but you can reschedule. Full policy is on argynauto.ca/legal/refund-policy"
+- "What if the seller doesn't show up?" → "That counts as a same-day cancellation unfortunately — no refund, but the $50 trip fee can go toward a future booking within 30 days. That's why we always recommend confirming with the seller before booking 👍"
+- "What if inspector can't come?" → "If we need to cancel on our end — full refund or reschedule, your choice. We'll let you know as early as possible."
 - "e-transfer?" → "Yeah we accept e-transfer! Send $199 to support@argynauto.ca — once sent, screenshot the confirmation and text it back here 👍"
 - "Do you check underneath?" → "Yeah we bring portable ramps for underside access + flashlights through the arches. We check rust, subframe, suspension mounts — all the key areas."
 - "Do you remove wheels?" → "We don't remove them, but we can see pad thickness and rotor condition through the openings. If something needs a closer look we flag it."
@@ -330,7 +332,8 @@ RULES:
 - ALWAYS mention $199 ONCE before sending the link
 - NEVER send the link without customer confirming they want it
 - NEVER ask more than one question per message
-- NEVER confirm exact inspection time — say "team confirms after payment"
+- NEVER ask about timing or scheduling before payment — say "team confirms the time after payment"
+- If customer asks "when can you come?" → "We can usually do same day or next day — the team locks in the exact time once payment goes through"
 - When customer confirms they want the link → write SEND_PAYMENT_LINK at the end of your message
 - If you don't know something → "Good question — let me check with the team and get back to you!"
 - Only discuss Argyn Auto inspections — stay on topic
@@ -370,7 +373,7 @@ def get_ai_response(phone, customer_message, lead_info=None):
         return ai_message
     except Exception as e:
         logger.error(f"Claude API error: {e}")
-        return "Hey! Thanks for reaching out. I'll have someone from our team follow up shortly. Questions? Call (647) 594-7510"
+        return "Hey! Thanks for reaching out. I'll have someone from our team follow up shortly. Questions? Call (647) 493-3481"
 
 
 
@@ -533,7 +536,7 @@ def _handle_inbound_postcall(inner_data, caller_phone, analysis):
         sms = (
             f"Hi! Thanks for calling Argyn Auto 🚗\n\n"
             f"Here's your inspection booking link:\n{pay_url}\n\n"
-            f"Questions? Call (647) 594-7510"
+            f"Questions? Call (647) 493-3481"
         )
         sid = send_sms(caller_phone, sms)
         if thread_id:
@@ -644,7 +647,7 @@ def post_call():
     sms_message = (
         f"Hi! Thanks for chatting with Alex from Argyn Auto 🚗\n\n"
         f"Here's your inspection booking link:\n{pay_url}\n\n"
-        f"Questions? Reply or call (647) 594-7510"
+        f"Questions? Reply or call (647) 493-3481"
     )
     sid = send_sms(external_number, sms_message)
 
@@ -724,7 +727,7 @@ def telegram_webhook():
                     sms_confirmation = (
                         "Payment received! ✅\n\n"
                         "Our inspector will contact you within 2 hours to confirm the exact inspection time.\n\n"
-                        "Questions? Reply to this message or call (647) 594-7510"
+                        "Questions? Reply to this message or call (647) 493-3481"
                     )
                     sid = send_sms(client_phone, sms_confirmation)
                     if sid:
@@ -901,7 +904,7 @@ def stripe_webhook():
             sms_confirmation = (
                 "Payment received! ✅\n\n"
                 "Our inspector will contact you within 2 hours to confirm the exact inspection time.\n\n"
-                "Questions? Reply to this message or call (647) 594-7510"
+                "Questions? Reply to this message or call (647) 493-3481"
             )
             sid = send_sms(client_phone, sms_confirmation)
             if sid:
@@ -1054,7 +1057,7 @@ def inspector_accepted():
         sms = (
             "Your inspection is confirmed! ✅\n\n"
             "Our inspector will reach out to you shortly to coordinate the details.\n\n"
-            "Questions? Call (647) 594-7510"
+            "Questions? Call (647) 493-3481"
         )
         send_sms(client_phone, sms)
         logger.info(f"Confirmation SMS sent to {client_phone}")
